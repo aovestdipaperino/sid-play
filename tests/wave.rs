@@ -310,3 +310,58 @@ fn ring_mod_reads_the_sources_phase_not_its_output() {
         "the control oscillator produced nothing to compare against"
     );
 }
+
+#[test]
+fn toggling_test_resets_the_noise_shift_register() {
+    let mut w = wave_obj();
+
+    // Rising edge first: applying test clears the register, and with the accumulator
+    // pinned there is nothing to clock it, so it stays put.
+    for _ in 0..64 {
+        w.tick(32_768, 0, wave::NOISE | wave::TEST, false);
+        assert!(!w.msb_rising(), "test held must not produce sync edges");
+    }
+    assert_eq!(
+        w.random_byte(),
+        0,
+        "setting test must clear the shift register"
+    );
+    let shifts_while_tested = w.noise_shifts();
+    assert_eq!(
+        shifts_while_tested, 0,
+        "the register shifted while test was held"
+    );
+
+    // Falling edge: the register reloads to its start value.
+    w.tick(0, 0, wave::NOISE, false);
+    assert_eq!(
+        w.random_byte(),
+        0xff,
+        "clearing test must reload the shift register"
+    );
+
+    // Prove the register is live again, then re-apply test so the clear above cannot
+    // have passed by the register already sitting at zero.
+    let mut guard = 0;
+    while w.random_byte() == 0xff && guard < 100_000 {
+        w.tick(32_768, 0, wave::NOISE, false);
+        guard += 1;
+    }
+    assert!(
+        w.noise_shifts() > shifts_while_tested,
+        "the register never resumed after test was released"
+    );
+    assert_ne!(
+        w.random_byte(),
+        0xff,
+        "register never moved off its reload value"
+    );
+    let moved = w.random_byte();
+
+    w.tick(32_768, 0, wave::NOISE | wave::TEST, false);
+    assert_eq!(
+        w.random_byte(),
+        0,
+        "re-applying test did not clear a register that had moved (was {moved:#04x})"
+    );
+}

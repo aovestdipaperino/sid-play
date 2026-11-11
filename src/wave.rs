@@ -15,6 +15,9 @@ const ACC_MASK: u32 = 0x00ff_ffff;
 const ACC_MSB: u32 = 0x0080_0000;
 const ACC_BIT19: u32 = 0x0008_0000;
 
+/// What the 23-bit noise register is loaded with when the test bit is released.
+const SHIFT_RELOAD: u32 = 0x7f_ff_f8;
+
 /// The seven waveform selections that have a shape of their own. These are value
 /// bindings, so a `match` on them compares bitmasks; writing `SAWTOOTH | TRIANGLE`
 /// inline would be an or-pattern and would never match the combination.
@@ -34,6 +37,8 @@ pub struct Wave {
     /// 23-bit noise shift register.
     shift: u32,
     noise_shifts: u64,
+    /// Test-bit state last cycle, so its edges are visible.
+    test_prev: bool,
     output: u16,
 }
 
@@ -44,8 +49,9 @@ impl Wave {
             accumulator: 0,
             previous: 0,
             msb_rising: false,
-            shift: 0x7f_ff_f8,
+            shift: SHIFT_RELOAD,
             noise_shifts: 0,
+            test_prev: false,
             output: 0,
         }
     }
@@ -84,8 +90,16 @@ impl Wave {
 
     /// One Φ2 cycle. `ring_source_msb` is bit 23 of the ring/sync source oscillator.
     pub fn tick(&mut self, freq: u16, pw: u16, ctrl: u8, ring_source_msb: bool) -> u16 {
+        let test = (ctrl & TEST) != 0;
+        if test != self.test_prev {
+            // Toggling test is how a tune resets the noise generator: the register
+            // is cleared while test is applied and reloaded the moment it is released.
+            self.shift = if test { 0 } else { SHIFT_RELOAD };
+            self.test_prev = test;
+        }
+
         self.previous = self.accumulator;
-        if (ctrl & TEST) != 0 {
+        if test {
             // Test holds the oscillator at zero rather than letting it run.
             self.accumulator = 0;
             self.msb_rising = false;
@@ -193,8 +207,9 @@ impl Wave {
         self.accumulator = 0;
         self.previous = 0;
         self.msb_rising = false;
-        self.shift = 0x7f_ff_f8;
+        self.shift = SHIFT_RELOAD;
         self.noise_shifts = 0;
+        self.test_prev = false;
         self.output = 0;
     }
 }
