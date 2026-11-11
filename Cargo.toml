@@ -6,4 +6,4 @@ license = "GPL-2.0-only"
 description = "MOS 6581 SID chip emulator"
 
 [dev-dependencies]
-mos6502 = "0.10"
+lib6502 = "0.2.2"

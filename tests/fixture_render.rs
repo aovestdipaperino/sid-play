@@ -104,3 +104,67 @@ fn the_harness_renders_an_audible_unclipped_tune() {
         "the pitch never changed: {first} crossings in both windows"
     );
 }
+
+/// The second fixture is driven the way most real tunes are: its init installs
+/// a handler at the interrupt vector and starts CIA 1 timer A, and the handler —
+/// not the harness — calls the play routine. A single interrupt is not enough;
+/// the whole point is that the processor keeps taking them, so the render must
+/// still be carrying audio at the end rather than only at the start.
+#[test]
+fn an_irq_driven_tune_keeps_taking_interrupts() {
+    let tune = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("irq.sid");
+    let mut out = std::env::temp_dir();
+    out.push(format!(
+        "rust-sid-irq-{}-{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+
+    let run = Command::new(harness())
+        .arg(&tune)
+        .args(["--seconds", "2", "--out"])
+        .arg(&out)
+        .output()
+        .expect("the harness binary would not run");
+    assert!(run.status.success(), "the harness exited with failure");
+
+    let report = String::from_utf8_lossy(&run.stdout);
+    let words: Vec<&str> = report.split_whitespace().collect();
+    let irqs: u64 = words
+        .iter()
+        .position(|w| *w == "IRQs")
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| words[i].parse().ok())
+        .unwrap_or_else(|| panic!("could not find an interrupt count in: {report}"));
+
+    let samples = read_wav(&out);
+    std::fs::remove_file(&out).ok();
+
+    // The fixture's timer is latched to raise the line about fifty times a
+    // second. Anything near one means the handler is not returning with
+    // interrupts restored, which is the defect this test exists to catch.
+    assert!(
+        irqs >= 40,
+        "only {irqs} interrupts in two seconds; the handler is not re-arming"
+    );
+
+    let tail = &samples[samples.len() - samples.len() / 4..];
+    let rms = (tail
+        .iter()
+        .map(|s| f64::from(*s) * f64::from(*s))
+        .sum::<f64>()
+        / tail.len() as f64)
+        .sqrt();
+    let silent = tail.iter().filter(|s| **s == 0).count() as f64 / tail.len() as f64;
+    assert!(
+        rms > 300.0,
+        "audio died before the end of the render: tail rms {rms:.0}, zero fraction {silent:.2}"
+    );
+    assert!(silent < 0.05, "the tail is mostly silence: {silent:.2}");
+}
