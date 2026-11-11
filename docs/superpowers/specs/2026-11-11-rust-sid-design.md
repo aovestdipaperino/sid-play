@@ -52,7 +52,7 @@ Polyphony is opt-in and never claims to be hardware.
 
 ```
 rust-sid/
-  Cargo.toml            GPL-2.0-only, no runtime deps in the library
+  Cargo.toml            GPL-2.0-only; no default deps, `playback` feature adds cpal
   LICENSE               GPL-2.0
   README.md             what it is, licence, where the vendored data came from
   src/
@@ -66,6 +66,7 @@ rust-sid/
     resample.rs         Kaiser-windowed sinc FIR; four sampling methods
     profile.rs          Profile, CutoffLaw, ShaperBank
     bank.rs             Pls2 reader — runtime, from a caller-supplied path
+    sink.rs             Sink trait + WavSink; AudioSink behind the `playback` feature
     tables/
       mod.rs
       wave6581.rs       vendored combination tables
@@ -161,6 +162,30 @@ Reads a Pls2 RIFF bank from a path the caller supplies and fills a `Profile`. No
 compiled in, no file is read unless asked, and no measured bank is committed. Missing or
 malformed file returns `Err(BankError)`, never a panic.
 
+### `sink.rs`
+
+Where the samples go is a consumer concern, but the seam is shared, so the trait lives in the
+library and the two implementations are interchangeable.
+
+```rust
+pub trait Sink {
+    type Error;
+    /// One block of mono samples at the chip's host sample rate.
+    fn write(&mut self, samples: &[f32]) -> Result<(), Self::Error>;
+    /// Flush and, where relevant, close. Called once on clean shutdown.
+    fn finish(&mut self) -> Result<(), Self::Error>;
+}
+```
+
+- Mono in. Each implementation adapts: the WAV sink writes the channel count it was opened
+  with, the audio sink duplicates onto the device's channels.
+- `WavSink` is in the default build. It writes a canonical 44-byte RIFF/WAVE header, PCM16
+  or float32, and patches the two length fields in `finish`. No dependency.
+- `AudioSink` is behind the `playback` feature and is the only thing in the crate that pulls
+  `cpal`. It opens the default output device, blocks on a ring buffer, and reports device
+  failure as an error rather than falling back silently.
+- The chip never knows which sink it is feeding; nothing in `sid.rs` references this module.
+
 ### `synth/ensemble.rs`
 N chip-voices, each with independent filter state, mixed to a stereo bus. Cutoff expressed
 in Hz with cents modulation: `cutoff = base * 2^(cents/1200)`, base from a semitone-spaced
@@ -172,10 +197,12 @@ The 31 combined-waveform algorithms, selected by an enum. Reachable only from `s
 faithful `Sid` path cannot select them.
 
 ### The demo
-`cargo run --release --example psid -- tune.sid [--subsong N] [--ntsc] [--render out.wav]`
-— PSID load, `mos6502` as a dev-dependency so the library stays chip-only, RAM below
-`$d000`, halt trick at `$f000`, CIA-timer IRQ at 60 Hz, live output via `cpal`, WAV output
-when no device is available.
+`cargo run --release --example psid -- tune.sid [--subsong N] [--ntsc] [--sink wav|audio]
+[--out file.wav]` — PSID load, `mos6502` as a dev-dependency so the library stays
+dependency-free, RAM below `$d000`, halt trick at `$f000`, CIA-timer IRQ at 60 Hz. The demo
+holds a `Box<dyn Sink>` chosen by flag: `wav` is always available, `audio` is available when
+the crate is built with `--features playback`. Adding a third destination must not require
+touching the playback loop.
 
 ## Data flow
 
@@ -203,9 +230,11 @@ when no device is available.
   the envelope level.
 - `bank.rs`: `Result<Profile, BankError>` with variants for missing file, short chunk,
   unknown chunk, and a chunk whose size does not match its name.
+- Sinks: `write`/`finish` return their own error type; a short write or a failed flush is
+  propagated, never swallowed. `AudioSink` reports device-open failure as an error and does
+  **not** silently fall back to a file — the demo prints the reason and exits nonzero,
+  because a tune that played silently is worse than one that refused to start.
 - Demo: `thiserror`-free, a small `Error` enum plus `main() -> Result<(), Box<dyn Error>>`.
-  Audio-device failure falls back to rendering a WAV with a printed note, rather than
-  exiting nonzero.
 - Resampler: reject sample rates that violate the FIR/ring-buffer constraint at
   construction, with the reason, rather than producing garbage silently.
 
@@ -229,21 +258,26 @@ when no device is available.
 
 ## Phases and definition of done
 
-1. **Faithful chip.** reSID-equivalent DSP, vendored tables, extfilt, resampler.
-   *Done:* analytic, statistical and structural tests pass; renders a real `.sid`.
+1. **Faithful chip.** reSID-equivalent DSP, vendored tables, extfilt, resampler, `Sink`
+   trait and `WavSink`.
+   *Done:* analytic, statistical and structural tests pass; a real `.sid` renders to a WAV
+   you can hear.
 2. **Profile layer.** Measured amplitude curves, cutoff law, resonance→Q, shaper bank,
    tap weights, volume table, bleed; `bank.rs` loader.
    *Done:* A/B render differs audibly as expected; all phase-1 timing tests pass under both
    profiles; no measured data in git.
 3. **Synth layer.** `Ensemble`, Hz/cents cutoff, the 31 combine modes.
    *Done:* more than three simultaneous voices; phase-1 regression suite untouched.
-4. **Demo.** Live playback plus headless render.
-   *Done:* plays a tune out loud; renders a WAV with no audio device present.
+4. **Demo.** The `psid` example with sink selection, plus `AudioSink` behind `playback`.
+   *Done:* `--features playback -- --sink audio` plays a tune out loud; `--sink wav` renders
+   with no audio device present; the playback loop is identical between the two.
 
 ## Licensing and provenance rules
 
 - Crate licence: `GPL-2.0-only`. `LICENSE` present. README states the crate is GPL because
   it contains reSID's measured data.
+- The default build pulls in no third-party code at all. `cpal` enters only through the
+  `playback` feature, and nothing outside `sink.rs` may depend on it.
 - Every vendored table carries its `reSID (Dag Lem), GPL-2.0` header. This attribution is
   required by the licence and is not negotiable.
 - **No vendor product names anywhere in the source.** Mechanisms are described by behaviour,
