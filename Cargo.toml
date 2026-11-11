@@ -1,0 +1,8 @@
+[package]
+name = "rust-sid"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "MOS 6581 SID chip emulator"
+
+[dev-dependencies]
