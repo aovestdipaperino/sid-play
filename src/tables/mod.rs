@@ -3,6 +3,7 @@
 //! table, because the hardware only needs a measurement where the output bits
 //! interact with each other through the resistor network.
 
+mod fc;
 mod wave6581;
 mod wave8580;
 
@@ -27,6 +28,15 @@ pub fn for_model(model: crate::Model) -> &'static WaveTables {
     match model {
         crate::Model::Ntsc | crate::Model::Pal => &WAVE6581,
     }
+}
+
+pub use fc::{CutoffTable, cutoff_table, cutoff_table_8580};
+
+/// Centre frequency for an 11-bit cutoff value. Values above the register's
+/// range clamp to the top rather than wrapping: a tune that writes past 2047
+/// wants the filter wide open, not shut.
+pub fn cutoff_hz(model: crate::Model, fc: u16) -> f64 {
+    cutoff_table(model).f0[usize::from(fc.min(2047))]
 }
 
 #[cfg(test)]
