@@ -219,3 +219,117 @@ fn a_rate_above_the_chip_clock_is_reported_by_try_new() {
     assert!(Sid::try_new(Model::Pal, 2_000_000.0).is_err());
     assert!(Sid::try_new(Model::Pal, 44_100.0).is_ok());
 }
+
+/// Renders one second with voice 1 as a gated sawtooth and voice 3 as a much faster
+/// oscillator whose gate is *off*. A gated-off voice contributes only its DC term, so
+/// voice 3 is inaudible while its oscillator still runs and still raises the MSB that
+/// hard sync keys on. `sync` turns voice 1's sync bit on and off; everything else is
+/// identical, so the two renders differ only by what sync does.
+fn render_sync_case(sync: bool) -> Vec<f32> {
+    let mut sid = Sid::new(Model::Pal, RATE);
+    // Voice 3 (index 2): the master. Low frequency, gate off -- running but silent.
+    sid.write(14, 0xa0);
+    sid.write(15, 15); // voice 3 freq 4000, ~235 Hz at the PAL clock
+    sid.write(18, 0x00); // no gate
+    sid.write(19, 0x00);
+    sid.write(20, 0x00);
+    // Voice 2 (index 1): idle, contributes DC only.
+    sid.write(7, 0);
+    sid.write(8, 0);
+    sid.write(11, 0);
+    // Voice 1 (index 0): the slave. Low frequency, gated sawtooth.
+    sid.write(0, 0xe8);
+    sid.write(1, 3); // voice 1 freq 1000, ~59 Hz at the PAL clock
+    sid.write(4, 0x21 | if sync { 0x02 } else { 0x00 }); // gate + sawtooth [+ sync]
+    sid.write(5, 0x00);
+    sid.write(6, 0xf0);
+    sid.write(21, 0x07);
+    sid.write(22, 0xff); // cutoff at the top
+    sid.write(23, 0x01); // resonance 0, voice 1 routed
+    sid.write(24, 0x1f); // low-pass tap, full volume
+
+    let mut buf = vec![0.0f32; 44_100];
+    sid.render(&mut buf);
+    buf
+}
+
+/// How many times the signal crosses its own mean in a second. The slave free-runs at
+/// ~59 Hz. Hard sync resets it every time the master's bit 23 rises, i.e. every
+/// 2^24/4000 = 4194 cycles or ~235 Hz, and because the slave only reaches a quarter of
+/// its range before being reset, the synced waveform repeats at the master's rate -- four
+/// times as many mean crossings. The frequencies are deliberately not harmonically
+/// locked: at an integer ratio the slave wraps of its own accord on exactly the cycle the
+/// master resets it, and sync becomes inaudible. Measured through the chip's register
+/// interface, not by driving the oscillator primitive.
+fn zero_crossings(buf: &[f32]) -> usize {
+    let tail = &buf[20_000..];
+    let mean = tail.iter().sum::<f32>() / tail.len() as f32;
+    let signed: Vec<f32> = tail.iter().map(|s| s - mean).collect();
+    signed
+        .windows(2)
+        .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
+        .count()
+}
+
+#[test]
+fn hard_sync_locks_voice_1_to_voice_3() {
+    let free = zero_crossings(&render_sync_case(false));
+    let synced = zero_crossings(&render_sync_case(true));
+    assert!(
+        free > 30,
+        "the free-running slave barely oscillated: {free} crossings"
+    );
+    assert!(
+        synced > 3 * free,
+        "sync did not raise the slave to its master's rate: free {free}, synced {synced}"
+    );
+}
+
+/// Voice 1 as a gated triangle with voice 3 running slow and silent underneath, so the
+/// only difference between the two renders is voice 1's ring-mod bit.
+fn render_ring_case(ring: bool) -> Vec<f32> {
+    let mut sid = Sid::new(Model::Pal, RATE);
+    sid.write(14, 0xa0);
+    sid.write(15, 15); // voice 3 freq 4000, gate off
+    sid.write(18, 0x00);
+    sid.write(19, 0x00);
+    sid.write(20, 0x00);
+    sid.write(7, 0);
+    sid.write(8, 0);
+    sid.write(11, 0);
+    sid.write(0, 0xe8);
+    sid.write(1, 3); // voice 1 freq 1000
+    sid.write(4, 0x11 | if ring { 0x04 } else { 0x00 }); // gate + triangle [+ ring]
+    sid.write(5, 0x00);
+    sid.write(6, 0xf0);
+    sid.write(21, 0x07);
+    sid.write(22, 0xff);
+    sid.write(23, 0x01);
+    sid.write(24, 0x1f);
+
+    let mut buf = vec![0.0f32; 44_100];
+    sid.render(&mut buf);
+    buf
+}
+
+#[test]
+fn ring_modulation_of_voice_1_uses_voice_3_as_the_source() {
+    let plain = render_ring_case(false);
+    let ringed = render_ring_case(true);
+    assert!(
+        rms(&plain[20_000..]) > 0.01,
+        "the control render was silent: {}",
+        rms(&plain[20_000..])
+    );
+    assert!(
+        rms(&ringed[20_000..]) > 0.01,
+        "the ring-modulated render was silent: {}",
+        rms(&ringed[20_000..])
+    );
+    let plain_x = zero_crossings(&plain);
+    let ring_x = zero_crossings(&ringed);
+    assert!(
+        plain_x != ring_x,
+        "ring modulation changed nothing: both cross {plain_x} times"
+    );
+}

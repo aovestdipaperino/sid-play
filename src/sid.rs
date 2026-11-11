@@ -169,9 +169,12 @@ impl Sid {
             (self.regs[11] & OSC_SYNC) != 0,
             (self.regs[18] & OSC_SYNC) != 0,
         ];
+        // `rising[k]` is the MSB-rise flag of voice k's *source*, so the slave at
+        // index i is reset when `rising[i]` fires, and the source that is itself
+        // being zeroed this cycle is the one `rising[src]` describes.
         for i in 0..3 {
             let src = (i + 2) % 3;
-            if syncing[i] && rising[src] && !(syncing[src] && rising[(src + 2) % 3]) {
+            if syncing[i] && rising[i] && !(syncing[src] && rising[src]) {
                 self.voices[i].force_phase_zero();
             }
         }
