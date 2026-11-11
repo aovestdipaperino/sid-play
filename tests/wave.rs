@@ -252,3 +252,61 @@ fn the_random_register_moves_and_reads_back_as_a_byte() {
     }
     assert!(distinct > 1, "the noise register never moved");
 }
+
+#[test]
+fn sync_zeroes_the_slave_on_the_masters_wrap() {
+    let mut master = wave_obj();
+    let mut slave = wave_obj();
+    let mut unsynced = wave_obj();
+    let mut locked = 0;
+    let mut slave_max = 0u32;
+    let mut unsynced_max = 0u32;
+    for _ in 0..4096 {
+        master.tick(32_768, 0, wave::SAWTOOTH, false);
+        slave.tick(1_000, 0, wave::SAWTOOTH, false);
+        unsynced.tick(1_000, 0, wave::SAWTOOTH, false);
+        if master.msb_rising() {
+            slave.force_phase_zero();
+            assert_eq!(
+                slave.accumulator(),
+                0,
+                "force_phase_zero left a phase behind"
+            );
+            locked += 1;
+        }
+        slave_max = slave_max.max(slave.accumulator());
+        unsynced_max = unsynced_max.max(unsynced.accumulator());
+    }
+    assert!(locked >= 4, "master wrapped only {locked} times");
+    assert!(
+        slave_max < unsynced_max / 4,
+        "synced slave still ran away: max {slave_max} against unsynced {unsynced_max}"
+    );
+}
+
+#[test]
+fn ring_mod_reads_the_sources_phase_not_its_output() {
+    // A pulse source with pw = 4095 outputs zero for all but one phase in 4096, so
+    // an implementation that XORed the source's output bit 11 would essentially
+    // never ring-modulate. Reading the source's accumulator must still flip the
+    // destination's triangle sign twice per source cycle.
+    let mut source = wave_obj();
+    let mut dest = wave_obj();
+    let mut plain = wave_obj();
+    let mut with_ring = Vec::new();
+    let mut without = Vec::new();
+    for _ in 0..4096 {
+        source.tick(2048, 4095, wave::PULSE, false);
+        let msb = source.accumulator() & 0x0080_0000 != 0;
+        with_ring.push(dest.tick(256, 0, wave::TRIANGLE | wave::RING_MOD, msb));
+        without.push(plain.tick(256, 0, wave::TRIANGLE, false));
+    }
+    assert!(
+        with_ring != without,
+        "ring modulation had no effect against a nearly silent pulse source"
+    );
+    assert!(
+        without.windows(2).any(|p| p[0] != p[1]),
+        "the control oscillator produced nothing to compare against"
+    );
+}

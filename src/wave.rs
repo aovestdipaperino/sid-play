@@ -72,6 +72,16 @@ impl Wave {
         self.noise_shifts
     }
 
+    /// Hard sync. The caller resolves the chain in hardware order:
+    /// voice 0 is the slave of voice 2, voice 1 of voice 0, voice 2 of voice 1,
+    /// and skips a source that is itself being zeroed in the same cycle.
+    #[inline]
+    pub fn force_phase_zero(&mut self) {
+        self.accumulator = 0;
+        self.previous = 0;
+        self.msb_rising = false;
+    }
+
     /// One Φ2 cycle. `ring_source_msb` is bit 23 of the ring/sync source oscillator.
     pub fn tick(&mut self, freq: u16, pw: u16, ctrl: u8, ring_source_msb: bool) -> u16 {
         self.previous = self.accumulator;
