@@ -3,6 +3,7 @@
 pub mod envelope;
 pub mod sink;
 pub mod tables;
+pub mod wave;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Model {
