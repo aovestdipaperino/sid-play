@@ -394,12 +394,24 @@ fn a_gated_sawtooth_reaches_full_amplitude() {
 }
 
 #[test]
-fn an_ungated_voice_is_silent_at_the_baseline() {
+fn an_ungated_voice_carries_the_dc_and_no_signal() {
+    // Silence for an idle voice is achieved downstream: the output stage's
+    // high-pass throws the DC away. What the voice itself must guarantee is that
+    // it produces no *signal* - a flat line at the DC term, which is 0x800 * 0xff.
     let mut v = voice();
+    let first = v.tick(1000, 0, wave::SAWTOOTH, FAST, false);
     for _ in 0..10_000 {
-        v.tick(1000, 0, wave::SAWTOOTH, FAST, false);
+        assert_eq!(
+            v.tick(1000, 0, wave::SAWTOOTH, FAST, false),
+            first,
+            "an ungated voice is generating a signal"
+        );
     }
-    assert_eq!(v.output(), 0, "no gate, no envelope, no output");
+    assert_eq!(
+        first,
+        0x800 * 0xff,
+        "idle voice is not sitting at the DC term"
+    );
 }
 
 #[test]
@@ -410,9 +422,9 @@ fn the_output_is_asymmetric_as_the_hardware_is() {
     // and cross it; the hardware's voice never goes negative at full envelope.
     //
     // Two things the obvious version of this test gets wrong:
-    //   - measuring from the first cycle includes the attack ramp, where the envelope
-    //     is zero and the output is forced to zero, so the minimum is always exactly
-    //     zero and the assertion holds no matter what the amplitude model does;
+    //   - measuring from the first cycle includes the attack ramp, where the voice
+    //     sits at the DC term. That floor is about 39% of the peak, so the ratio
+    //     check below passes on a model whose zero level is wrong;
     //   - a low FREQ never walks the oscillator out of the bottom of its range.
     // So: charge the envelope to full first, then walk the whole range at one phase
     // per cycle.
@@ -463,7 +475,10 @@ fn normalising_a_full_voice_lands_in_range() {
 }
 
 #[test]
-fn release_brings_a_gated_off_voice_down() {
+fn release_takes_the_signal_swing_down_to_nothing() {
+    // The DC term never goes away - it is what keeps the output continuous - so
+    // "got quieter" has to be measured as the peak-to-peak swing, not as the
+    // magnitude of the output.
     let mut v = voice();
     let charge = Adsr {
         attack: 0x0,
@@ -471,23 +486,51 @@ fn release_brings_a_gated_off_voice_down() {
         sustain: 0xf,
         release: 0x0,
     };
-    for _ in 0..50_000 {
-        v.tick(1000, 0, wave::SAWTOOTH | wave::GATE, charge, false);
-    }
-    let held = v.output().abs();
+    let swing_while_gated = {
+        for _ in 0..50_000 {
+            v.tick(1000, 0, wave::SAWTOOTH | wave::GATE, charge, false);
+        }
+        let mut lo = i32::MAX;
+        let mut hi = i32::MIN;
+        for _ in 0..200_000 {
+            let s = v.tick(1000, 0, wave::SAWTOOTH | wave::GATE, charge, false);
+            lo = lo.min(s);
+            hi = hi.max(s);
+        }
+        hi - lo
+    };
+    assert!(
+        swing_while_gated > 400_000,
+        "never got loud: {swing_while_gated}"
+    );
+
     let off = Adsr {
         attack: 0x0,
         decay: 0x0,
         sustain: 0xf,
         release: 0x2,
     };
-    for _ in 0..200_000 {
+    // Let the release finish before measuring. A falling sweep at rate nibble 2
+    // is 756 rate periods of 63 cycles, so 100_000 cycles is comfortably past the
+    // end; measuring across the ramp would just re-measure how loud it was.
+    for _ in 0..100_000 {
         v.tick(1000, 0, wave::SAWTOOTH, off, false);
     }
-    assert!(held > 100_000, "was never loud: {held}");
+    assert_eq!(v.envelope_level(), 0, "release never reached silence");
+    let mut lo = i32::MAX;
+    let mut hi = i32::MIN;
+    for _ in 0..200_000 {
+        let s = v.tick(1000, 0, wave::SAWTOOTH, off, false);
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    let swing_after_release = hi - lo;
     assert!(
-        v.output().abs() < held / 20,
-        "release did not take it down: {}",
-        v.output()
+        swing_after_release < swing_while_gated / 20,
+        "release left a swing of {swing_after_release} against {swing_while_gated} while gated"
+    );
+    assert_eq!(
+        hi, lo,
+        "a released voice should sit flat at the DC term, not drift: {lo}..{hi}"
     );
 }
