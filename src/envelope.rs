@@ -103,8 +103,15 @@ impl Envelope {
             State::Release => RATE_PERIOD[usize::from(adsr.release & 0x0f)],
         };
 
+        // The rate counter is 15 bits wide and the step fires on exact equality,
+        // which is the ADSR-delay bug: rewrite the register so the new period is
+        // below the counter's current value and it keeps counting to the wrap,
+        // resets, and only then counts up to the new period before stepping.
         self.rate_counter += 1;
-        if self.rate_counter < period {
+        if self.rate_counter & 0x8000 != 0 {
+            self.rate_counter = (self.rate_counter + 1) & 0x7fff;
+        }
+        if self.rate_counter != period {
             return;
         }
         self.rate_counter = 0;

@@ -203,3 +203,45 @@ fn register_nibbles_split_high_and_low() {
     assert_eq!(adsr.sustain, 3);
     assert_eq!(adsr.release, 0xc);
 }
+
+#[test]
+fn rewriting_the_rate_register_mid_envelope_delays_the_step_to_the_counter_wrap() {
+    // The ADSR-delay bug. The rate counter is 15 bits and the envelope step fires
+    // only when it exactly equals the current period, so switching to a faster
+    // rate whose period the counter has already passed does not step on the next
+    // cycle: the counter runs on to 0x8000, wraps to 1, and only then counts up to
+    // the new period.
+    let slow = Adsr {
+        attack: 0xf, // period 31_251
+        ..Adsr::default()
+    };
+    let fast = Adsr {
+        attack: 0x0, // period 9
+        ..Adsr::default()
+    };
+    let warm = 100;
+
+    let mut env = Envelope::default();
+    for _ in 0..warm {
+        env.tick(true, slow);
+    }
+    assert_eq!(env.level(), 0, "the slow rate stepped too early");
+
+    // One cycle at the new, faster rate must still not step.
+    let mut cycles = 1;
+    env.tick(true, fast);
+    assert_eq!(env.level(), 0, "the step ignored the delay bug");
+
+    // From a counter of `warm`: (0x8000 - warm) cycles to reach the wrap, which
+    // lands on 1 rather than 0, then (period - 1) more to reach the period.
+    let expected = (0x8000 - warm) + (9 - 1);
+    while env.level() == 0 && cycles < 40_000 {
+        env.tick(true, fast);
+        cycles += 1;
+    }
+    assert_eq!(
+        cycles, expected,
+        "step came after {cycles} cycles, expected {expected} from the wrap"
+    );
+    assert_eq!(env.level(), 1);
+}
