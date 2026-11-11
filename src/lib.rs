@@ -1,6 +1,7 @@
 //! MOS 6581 SID, emulated one step per Φ2 cycle.
 
 pub mod envelope;
+pub mod filter;
 pub mod sink;
 pub mod tables;
 pub mod voice;
