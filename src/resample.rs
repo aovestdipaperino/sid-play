@@ -1,8 +1,16 @@
 //! Chip-rate to host-rate conversion. The chip always runs at Phi 2; this is the
 //! only place the host sample rate enters the signal path.
 //!
-//! The filter is a Kaiser-windowed sinc evaluated on a grid one host sample apart,
-//! which is `cycles_per_sample` chip cycles apart. Its taps are placed symmetrically
+//! The filter is a Kaiser-windowed sinc whose taps sit one *chip* sample apart, with
+//! the tap count scaled by the chip-to-host ratio so the transition band lands where
+//! the attenuation target requires. Spacing the taps one *host* sample apart instead
+//! would be wrong however long the filter were made: a comb with taps every `R`
+//! samples has a response periodic at `clock / R`, so it samples the signal itself at
+//! the host rate and folds everything above host Nyquist into the passband before the
+//! filter gets a chance to remove it. The whole purpose of the stage is to remove that
+//! energy, so the grid has to be the chip's own.
+//!
+//! The taps are placed symmetrically
 //! about the output time, so it has zero phase: a sine that goes in comes out at the
 //! same instant rather than a millisecond later. The cost is that an output cannot be
 //! produced until the newest sample its window needs has arrived, which delays the
@@ -18,7 +26,9 @@ pub enum Method {
     Interpolate,
     /// Anti-alias filter with interpolated taps.
     ResampleInterpolate,
-    /// Anti-alias filter, nearest chip sample per tap.
+    /// Anti-alias filter reading the nearest coefficient-table entry. The chip signal
+    /// is always read at exact integer chip offsets; what this discards is the
+    /// sub-chip-sample output phase, which `ResampleInterpolate` keeps.
     ResampleFast,
 }
 
@@ -173,13 +183,29 @@ impl Resampler {
             // then spread over the chip axis one tap per chip sample.
             let dw = (1.0 - PASSBAND) * PI;
             let order = ((ATTENUATION - 7.95) / (2.285 * dw) + 0.5) as usize;
+            // The tap count is spread over the chip axis, so a ratio this wide cannot
+            // be represented as a tap count at all. Reject it here rather than let the
+            // cast below saturate: a wrapped count would build a one-tap filter that
+            // silently stops nothing.
+            if ratio > RINGSIZE as f64 {
+                return Err(ResampleError::UnsupportedRatio {
+                    clock_hz,
+                    sample_rate,
+                });
+            }
             let span = ((order as f64 * ratio) as usize | 1) + 1;
             let m = span / 2;
             let cutoff = PASSBAND * 0.5 * sample_rate / clock_hz;
             // The oldest tap sits `centre` chip samples behind the output time and the
             // newest `centre` ahead of it, and the output time itself can lag the
-            // newest chip sample by up to one host period.
-            if 2 * m + 2 + ratio.ceil() as usize + 1 > RINGSIZE {
+            // newest chip sample by up to one host period. Saturating so that no
+            // accepted ratio can panic on the arithmetic.
+            let need = 2usize
+                .saturating_mul(m)
+                .saturating_add(2)
+                .saturating_add(ratio.ceil() as usize)
+                .saturating_add(1);
+            if need > RINGSIZE {
                 return Err(ResampleError::UnsupportedRatio {
                     clock_hz,
                     sample_rate,
@@ -406,6 +432,27 @@ mod tests {
         assert!(Resampler::new(0.0, 44_100.0, Method::Fast).is_err());
         assert!(Resampler::new(CLOCK, f64::NAN, Method::Fast).is_err());
         assert!(Resampler::new(CLOCK, 2_000_000.0, Method::Fast).is_err());
+    }
+
+    /// A positive rate so small that the ratio overflows a tap count must come back
+    /// as an error. Left unchecked the cast saturates and the `+ 1` overflows: a panic
+    /// in a debug build, and in release a wrapped count that builds a one-tap filter
+    /// stopping nothing at all.
+    #[test]
+    fn an_absurdly_wide_ratio_is_refused_before_the_tap_count_overflows() {
+        for rate in [1e-30, 1e-12, 1e-6, 1.0] {
+            assert!(
+                Resampler::new(CLOCK, rate, Method::ResampleInterpolate).is_err(),
+                "a {rate} Hz host rate against a {CLOCK} Hz chip must be refused"
+            );
+            assert!(
+                Resampler::new(CLOCK, rate, Method::ResampleFast).is_err(),
+                "a {rate} Hz host rate must be refused for the fast filter too"
+            );
+        }
+        // The unfiltered methods hold the ratio as a float and need no tap table, so
+        // they still accept these rates rather than inventing a limit.
+        assert!(Resampler::new(CLOCK, 1e-30, Method::Fast).is_ok());
     }
 
     #[test]
