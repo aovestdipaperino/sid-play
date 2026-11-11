@@ -3,6 +3,7 @@
 pub mod envelope;
 pub mod extfilt;
 pub mod filter;
+pub mod resample;
 pub mod sink;
 pub mod tables;
 pub mod voice;
