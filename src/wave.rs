@@ -33,6 +33,7 @@ pub struct Wave {
     msb_rising: bool,
     /// 23-bit noise shift register.
     shift: u32,
+    noise_shifts: u64,
     output: u16,
 }
 
@@ -44,6 +45,7 @@ impl Wave {
             previous: 0,
             msb_rising: false,
             shift: 0x7f_ff_f8,
+            noise_shifts: 0,
             output: 0,
         }
     }
@@ -63,6 +65,13 @@ impl Wave {
         self.msb_rising
     }
 
+    /// How many times the noise register has shifted. A shift register that stops
+    /// changing is locked up, and this counter is how the caller can tell.
+    #[inline]
+    pub fn noise_shifts(&self) -> u64 {
+        self.noise_shifts
+    }
+
     /// One Φ2 cycle. `ring_source_msb` is bit 23 of the ring/sync source oscillator.
     pub fn tick(&mut self, freq: u16, pw: u16, ctrl: u8, ring_source_msb: bool) -> u16 {
         self.previous = self.accumulator;
@@ -80,6 +89,7 @@ impl Wave {
         if (self.previous & ACC_BIT19) == 0 && (self.accumulator & ACC_BIT19) != 0 {
             let bit0 = ((self.shift >> 22) ^ (self.shift >> 17)) & 1;
             self.shift = ((self.shift << 1) & 0x007f_ffff) | bit0;
+            self.noise_shifts += 1;
         }
 
         self.output = self.waveform(pw, ctrl, ring_source_msb);
@@ -174,6 +184,7 @@ impl Wave {
         self.previous = 0;
         self.msb_rising = false;
         self.shift = 0x7f_ff_f8;
+        self.noise_shifts = 0;
         self.output = 0;
     }
 }

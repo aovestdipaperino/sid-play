@@ -184,3 +184,71 @@ fn noise_overrides_the_other_selections() {
         assert_eq!(combo, alone, "noise+others did not resolve to noise");
     }
 }
+
+#[test]
+fn noise_rate_follows_the_frequency_register() {
+    // The shift register is clocked by accumulator bit 19, so a higher frequency
+    // register must produce more shifts, not the same number.
+    let mut slow = wave_obj();
+    let mut fast = wave_obj();
+    for _ in 0..200_000 {
+        slow.tick(16, 0, wave::NOISE, false);
+        fast.tick(4096, 0, wave::NOISE, false);
+    }
+    assert!(
+        fast.noise_shifts() > slow.noise_shifts() * 8,
+        "slow {} fast {}",
+        slow.noise_shifts(),
+        fast.noise_shifts()
+    );
+}
+
+#[test]
+fn noise_is_loud_symmetric_about_mid_scale_and_reproducible() {
+    // The waveform output is unsigned 12-bit like every other shape; centring to
+    // zero happens later, in the voice's amplitude stage. FREQ is high enough that
+    // bit 19 clocks the register thousands of times over the sample, so this
+    // measures the shift register rather than its seed value.
+    let mut a = wave_obj();
+    let mut b = wave_obj();
+    let mut sum = 0i64;
+    let mut squares = 0i64;
+    let n = 2_000_000;
+    let mut same = true;
+    for _ in 0..n {
+        let x = a.tick(32_768, 0, wave::NOISE, false);
+        let y = b.tick(32_768, 0, wave::NOISE, false);
+        if x != y {
+            same = false;
+        }
+        let centred = i64::from(x) - 2048;
+        sum += centred;
+        squares += centred * centred;
+    }
+    let mean = sum as f64 / n as f64;
+    let rms = (squares as f64 / n as f64).sqrt();
+    assert!(same, "noise is not deterministic");
+    assert!(a.noise_shifts() > 10_000, "the register barely moved");
+    assert!(rms > 800.0, "noise is quiet: rms {rms}");
+    assert!(
+        mean.abs() < rms * 0.1,
+        "noise is not centred: mean {mean} rms {rms}"
+    );
+}
+
+#[test]
+fn the_random_register_moves_and_reads_back_as_a_byte() {
+    let mut w = wave_obj();
+    let mut seen = [0u8; 512];
+    let mut distinct = 0usize;
+    for _ in 0..4096 {
+        w.tick(4096, 0, wave::NOISE, false);
+        let b = w.random_byte();
+        let slot = &mut seen[usize::from(b)];
+        if *slot == 0 {
+            *slot = 1;
+            distinct += 1;
+        }
+    }
+    assert!(distinct > 1, "the noise register never moved");
+}
