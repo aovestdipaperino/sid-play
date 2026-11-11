@@ -365,3 +365,129 @@ fn toggling_test_resets_the_noise_shift_register() {
         "re-applying test did not clear a register that had moved (was {moved:#04x})"
     );
 }
+
+use rust_sid::envelope::Adsr;
+use rust_sid::voice::{FULL_SCALE, Voice};
+
+fn voice() -> Voice {
+    Voice::new(tables::for_model(Model::Pal))
+}
+
+const FAST: Adsr = Adsr {
+    attack: 0x0,
+    decay: 0x0,
+    sustain: 0xf,
+    release: 0x0,
+};
+
+#[test]
+fn a_gated_sawtooth_reaches_full_amplitude() {
+    let mut v = voice();
+    let mut peak = 0i32;
+    for _ in 0..200_000 {
+        peak = peak.max(
+            v.tick(1000, 0, wave::SAWTOOTH | wave::GATE, FAST, false)
+                .abs(),
+        );
+    }
+    assert!(peak > 400_000, "voice peak is only {peak}");
+}
+
+#[test]
+fn an_ungated_voice_is_silent_at_the_baseline() {
+    let mut v = voice();
+    for _ in 0..10_000 {
+        v.tick(1000, 0, wave::SAWTOOTH, FAST, false);
+    }
+    assert_eq!(v.output(), 0, "no gate, no envelope, no output");
+}
+
+#[test]
+fn the_output_is_asymmetric_as_the_hardware_is() {
+    // The waveform's zero level sits well below the middle of its 12-bit range, so a
+    // full-swing voice swings far further positive than negative about its own DC
+    // point. A model that centred the waveform would swing symmetrically about zero
+    // and cross it; the hardware's voice never goes negative at full envelope.
+    //
+    // Two things the obvious version of this test gets wrong:
+    //   - measuring from the first cycle includes the attack ramp, where the envelope
+    //     is zero and the output is forced to zero, so the minimum is always exactly
+    //     zero and the assertion holds no matter what the amplitude model does;
+    //   - a low FREQ never walks the oscillator out of the bottom of its range.
+    // So: charge the envelope to full first, then walk the whole range at one phase
+    // per cycle.
+    let mut v = voice();
+    let mut guard = 0;
+    while v.envelope_level() != 255 && guard < 100_000 {
+        v.tick(4096, 0, wave::SAWTOOTH | wave::GATE, FAST, false);
+        guard += 1;
+    }
+    assert_eq!(v.envelope_level(), 255, "envelope never reached full level");
+
+    let mut lo = i32::MAX;
+    let mut hi = i32::MIN;
+    for _ in 0..8192 {
+        let s = v.tick(4096, 0, wave::SAWTOOTH | wave::GATE, FAST, false);
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    assert!(hi > lo, "flat output: {lo}..{hi}");
+    assert!(
+        lo > 0,
+        "output crosses zero, so the waveform is centred rather than hardware-offset: {lo}..{hi}"
+    );
+    // The floor of the swing is the giveaway. The waveform's zero level sits at about
+    // a fifth of the way up its range, so the minimum output is about a fifth of the
+    // maximum. A model that put the zero level in the middle of the range has almost
+    // the whole of its negative excursion cancelled by the DC term instead, and its
+    // floor collapses towards zero while its peak stays high.
+    assert!(
+        lo * 8 > hi,
+        "floor is {lo} against a peak of {hi}: the waveform's zero level looks centred, \
+         not at the ~22% of range the 6581 sits at"
+    );
+}
+
+#[test]
+fn normalising_a_full_voice_lands_in_range() {
+    let mut v = voice();
+    let mut peak = 0i32;
+    for _ in 0..200_000 {
+        peak = peak.max(
+            v.tick(1000, 0, wave::SAWTOOTH | wave::GATE, FAST, false)
+                .abs(),
+        );
+    }
+    let n = f64::from(peak) / FULL_SCALE;
+    assert!((0.5..=2.0).contains(&n), "normalised peak {n} is off scale");
+}
+
+#[test]
+fn release_brings_a_gated_off_voice_down() {
+    let mut v = voice();
+    let charge = Adsr {
+        attack: 0x0,
+        decay: 0x0,
+        sustain: 0xf,
+        release: 0x0,
+    };
+    for _ in 0..50_000 {
+        v.tick(1000, 0, wave::SAWTOOTH | wave::GATE, charge, false);
+    }
+    let held = v.output().abs();
+    let off = Adsr {
+        attack: 0x0,
+        decay: 0x0,
+        sustain: 0xf,
+        release: 0x2,
+    };
+    for _ in 0..200_000 {
+        v.tick(1000, 0, wave::SAWTOOTH, off, false);
+    }
+    assert!(held > 100_000, "was never loud: {held}");
+    assert!(
+        v.output().abs() < held / 20,
+        "release did not take it down: {}",
+        v.output()
+    );
+}
