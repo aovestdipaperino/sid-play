@@ -1,5 +1,6 @@
 //! MOS 6581 SID, emulated one step per Φ2 cycle.
 
+pub mod envelope;
 pub mod tables;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
