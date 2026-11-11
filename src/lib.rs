@@ -1,5 +1,6 @@
 //! MOS 6581 SID, emulated one step per Φ2 cycle.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Model {
     Ntsc,
     Pal,
