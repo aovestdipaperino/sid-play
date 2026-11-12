@@ -229,3 +229,42 @@ fn the_loader_refuses_a_block_that_cannot_be_placed() {
     );
     std::fs::remove_file(&dir).ok();
 }
+
+#[test]
+fn poweron_file_overrides_the_built_in_image() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scale.sid");
+    let dir = std::env::temp_dir().join(format!("sidplay-poweron-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = dir.join("image.bin");
+    std::fs::write(&image, sid_play::poweron::POWERON).unwrap();
+    let render = |extra: &[&std::ffi::OsStr], out: &Path| {
+        let status = Command::new(harness())
+            .arg(&fixture)
+            .args(["--seconds", "1", "--out"])
+            .arg(out)
+            .args(extra)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::read(out).unwrap()
+    };
+    let plain = render(&[], &dir.join("a.wav"));
+    let loaded = render(
+        &["--poweron".as_ref(), image.as_os_str()],
+        &dir.join("b.wav"),
+    );
+    assert_eq!(
+        plain, loaded,
+        "loading the built-in image from a file changed the render"
+    );
+    std::fs::write(&image, [0u8; 10]).unwrap();
+    let status = Command::new(harness())
+        .arg(&fixture)
+        .args(["--seconds", "1", "--poweron"])
+        .arg(&image)
+        .arg("--out")
+        .arg(dir.join("c.wav"))
+        .status()
+        .unwrap();
+    assert!(!status.success(), "a 10-byte power-on file was accepted");
+}

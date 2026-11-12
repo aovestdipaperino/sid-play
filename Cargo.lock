@@ -11,8 +11,6 @@ checksum = "9612d313617edd0a032e922a09cdc9ba7492bc373b357b745b2c166ae0a00fbd"
 [[package]]
 name = "mos6581"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9732bd041e6ad9dc176b08649e50e907704b4a0a9e7f0c27d142f62fbe815bf"
 dependencies = [
  "sid-gpl-data",
 ]

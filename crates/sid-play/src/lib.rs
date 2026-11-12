@@ -6,4 +6,6 @@
 //! `gpl-data`; leave the choice to the final binary. Cargo unifies features, so
 //! one dependency enabling it makes the whole program GPL-2.0.
 
+#[doc(hidden)]
+pub mod poweron;
 pub mod sink;

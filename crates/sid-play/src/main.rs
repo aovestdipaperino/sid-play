@@ -7,9 +7,7 @@
 //! tunes that do not install one, and a halt loop, all above $ffe0.
 //!
 //! `cargo run --release -p sid-play --bin render -- tune.sid [--subsong N] [--seconds S]
-//!         [--ntsc] [--probe] [--out file.wav]`
-
-mod poweron;
+//!         [--ntsc] [--probe] [--poweron FILE] [--out file.wav]`
 
 use mos6510::{Bus, Cpu};
 use mos6581::{Model, Sid};
@@ -632,8 +630,14 @@ fn write_halt_loop(ram: &mut [u8; 0x1_0000], halt: u16) {
 }
 
 /// Lay down the machine state a tune expects to find, before its init runs.
-fn write_machine_state(ram: &mut [u8; 0x1_0000], pal: bool, load: u16, end: u16) {
-    for (addr, value) in poweron::POWERON.iter().enumerate() {
+fn write_machine_state(
+    ram: &mut [u8; 0x1_0000],
+    image: &[u8; 0x400],
+    pal: bool,
+    load: u16,
+    end: u16,
+) {
+    for (addr, value) in image.iter().enumerate() {
         ram[addr] = *value;
     }
     // The video-standard flag the Kernal keeps in $02A6: 1 for PAL, 0 for NTSC.
@@ -660,6 +664,8 @@ struct Options {
     probe: bool,
     /// Record where the tune executes. Inert unless asked for.
     trace: bool,
+    /// A 1024-byte file replacing the built-in power-on RAM image.
+    poweron: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Options, Box<dyn Error>> {
@@ -671,6 +677,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
         out: PathBuf::from("out.wav"),
         probe: false,
         trace: false,
+        poweron: None,
     };
 
     let mut args = std::env::args().skip(1);
@@ -685,6 +692,9 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
             "--ntsc" => o.ntsc = true,
             "--probe" => o.probe = true,
             "--trace" => o.trace = true,
+            "--poweron" => {
+                o.poweron = Some(PathBuf::from(args.next().ok_or("--poweron needs a value")?));
+            }
             other => o.tune = Some(PathBuf::from(other)),
         }
     }
@@ -693,12 +703,19 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
 }
 
 /// Place the resolved block in memory and lay down the harness's own stubs.
-fn setup(model: Model, loaded: &Loaded, pal: bool, stubs: Stubs) -> Rc<RefCell<Machine>> {
+fn setup(
+    model: Model,
+    image: &[u8; 0x400],
+    loaded: &Loaded,
+    pal: bool,
+    stubs: Stubs,
+) -> Rc<RefCell<Machine>> {
     let machine = Rc::new(RefCell::new(Machine::new(model)));
     {
         let mut m = machine.borrow_mut();
         write_machine_state(
             &mut m.ram,
+            image,
             pal,
             loaded.load,
             loaded.load + loaded.data.len() as u16,
@@ -902,7 +919,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let opts = parse_args()?;
     let Some(path) = opts.tune else {
         return Err(
-            "usage: render tune.sid [--subsong N] [--seconds S] [--ntsc] [--probe] [--out file.wav]"
+            "usage: render tune.sid [--subsong N] [--seconds S] [--ntsc] [--probe] [--poweron FILE] [--out file.wav]"
                 .into(),
         );
     };
@@ -949,7 +966,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let machine = setup(model, &loaded, pal, stubs);
+    let image: [u8; 0x400] = match &opts.poweron {
+        Some(p) => std::fs::read(p)?
+            .try_into()
+            .map_err(|v: Vec<u8>| format!("--poweron wants 1024 bytes, got {}", v.len()))?,
+        None => sid_play::poweron::POWERON,
+    };
+    let machine = setup(model, &image, &loaded, pal, stubs);
     if opts.trace {
         machine.borrow().trace.set(true);
     }
