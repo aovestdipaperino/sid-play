@@ -7,4 +7,4 @@ license = "GPL-2.0-only"
 description = "MOS 6581 SID chip emulator"
 
 [dev-dependencies]
-mos6510 = { path = "../mos6510" }
+mos6510 = "0.1"

@@ -5,8 +5,8 @@ Branch `feat/faithful-chip`. 7 test targets green (91 tests),
 both clean.
 
 > **Update 2026-11-12: the silent-tune problem was the CPU, not the tunes.**
-> `lib6502` was the cause. It has been replaced by the sibling crate
-> `../mos6510` (cycle-exact NMOS 6510, MIT OR Apache-2.0, passes Tom Harte's
+> `lib6502` was the cause. It has been replaced by the crate
+> [`mos6510`](https://crates.io/crates/mos6510) 0.1 (cycle-exact NMOS 6510, MIT OR Apache-2.0, passes Tom Harte's
 > SingleStepTests 256/256 and Klaus Dormann's functional test). The CIA now
 > drives the CPU's IRQ pin, and the 6510 port starts as the Kernal leaves it.
 > Coverage: **16/16 corpus PSIDs plus Last Ninja play tonal audio** (10 s
@@ -16,8 +16,13 @@ both clean.
 > per-window minimums go lower (`Axel_F` 0.12, `Ark_Pandora` 0.24).
 > The medians of six tunes dropped: 4_Soccer_Sims, 5_Title_Tunes, ACE_II,
 > All_Terrain_Vehicle (the most, 0.77 to 0.69), Alternative_World_Games and
-> `Axel_F`. The cause was not investigated. It could be the new core's more
-> faithful timing, or it could be a real regression.
+> `Axel_F`. All_Terrain_Vehicle was investigated: the register write streams
+> of the two builds are identical except voice 3 frequency, because the tune
+> reads through a null pointer (`LDA ($F0),Y` with `$F0/$F1 = $0000`). On a
+> C64 that read hits the 6510 port register at `$00` (`$2F`); the old build
+> had no port and read `0`. Giving the old build the port values made its
+> writes byte-identical to the new build. So that drop is the new core being
+> right. The other five drops were not investigated individually.
 > Sections further down that say the tunes "decided not to play" are
 > superseded.
 
@@ -52,14 +57,14 @@ PSID harness that runs a tune's 6510 code and renders it through the chip to a
 WAV file.
 
 The library is the chip only — no CPU, no memory map, no player. The CPU is the
-sibling crate `../mos6510`, a dev-dependency used by the example and tests.
+`mos6510` crate from crates.io, a dev-dependency used by the example and tests.
 
 ```
 src/            1929 lines   the chip: wave, envelope, voice, filter, extfilt,
                              resample, sink, sid, tables (generated)
 tests/          1532 lines   behavioural tests per component + fixture renders
 examples/render.rs ~1200     PSID loader + 6510 harness + trace diagnostics
-../mos6510/                   the CPU core (separate crate and repository)
+mos6510 (crates.io)          the CPU core, github.com/aovestdipaperino/mos6510
 docs/superpowers/specs/      the design spec
 docs/superpowers/plans/      plan 1 (faithful chip)
 .superpowers/sdd/            task briefs, reports, review packages, ledger
@@ -67,8 +72,7 @@ docs/superpowers/plans/      plan 1 (faithful chip)
 
 ## Build and run
 
-`mos6510` is a path dependency: until it is published, check it out as a
-sibling directory (`../mos6510`) before building.
+`mos6510` comes from crates.io; no sibling checkout is needed.
 
 ```sh
 cargo test
@@ -105,7 +109,7 @@ above):* three real tunes render sustained tonal audio: `Action_Biker`, `5_Title
 
 ## CPU defects in lib6502 0.2.2
 
-Historical: rust-sid no longer uses lib6502 (see `../mos6510`).
+Historical: rust-sid no longer uses lib6502 (see the `mos6510` crate).
 
 Found with a harness that ran Klaus Dormann's `6502_functional_test.bin` on
 lib6502 (the harness has since been removed):
