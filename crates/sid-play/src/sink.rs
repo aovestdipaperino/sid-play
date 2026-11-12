@@ -162,6 +162,60 @@ struct Ring {
     queue: std::sync::Mutex<std::collections::VecDeque<f32>>,
     changed: std::sync::Condvar,
     capacity: usize,
+    /// Total samples the reader has taken; the stall check watches it move.
+    drained: std::sync::atomic::AtomicU64,
+    /// How long a blocked waiter tolerates no draining before it gives up.
+    stall: std::time::Duration,
+}
+
+/// Why a blocked wait on the ring ended early.
+#[cfg_attr(not(feature = "playback"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// The caller's `give_up` said so (a stored stream failure).
+    GaveUp,
+    /// The reader made no progress for the stall timeout.
+    Stalled,
+}
+
+/// The first failure the device reports. Sticky: it is never cleared, so every
+/// later check still sees it and a blocked waiter keeps being released.
+#[cfg_attr(not(feature = "playback"), allow(dead_code))]
+struct Latch<E> {
+    slot: std::sync::Mutex<Option<E>>,
+}
+
+#[cfg_attr(not(feature = "playback"), allow(dead_code))]
+impl<E: Clone> Latch<E> {
+    fn new() -> Self {
+        Self {
+            slot: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<E>> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record `err` unless one is already held; later ones are usually echoes.
+    fn set_first(&self, err: E) {
+        let mut slot = self.lock();
+        if slot.is_none() {
+            *slot = Some(err);
+        }
+    }
+
+    fn is_set(&self) -> bool {
+        self.lock().is_some()
+    }
+
+    /// `Err` with a copy of the stored failure, every time it is asked.
+    fn check(&self) -> Result<(), E> {
+        match &*self.lock() {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        }
+    }
 }
 
 #[cfg_attr(not(feature = "playback"), allow(dead_code))]
@@ -169,11 +223,33 @@ impl Ring {
     /// How long a blocked writer sleeps before it asks again whether to give up.
     const POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
+    /// No draining for this long while a waiter is blocked means the device
+    /// has silently stopped calling back.
+    const STALL: std::time::Duration = std::time::Duration::from_secs(2);
+
     fn new(capacity: usize) -> Self {
+        Self::with_stall(capacity, Self::STALL)
+    }
+
+    fn with_stall(capacity: usize, stall: std::time::Duration) -> Self {
         Self {
             queue: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
             changed: std::sync::Condvar::new(),
             capacity: capacity.max(1),
+            drained: std::sync::atomic::AtomicU64::new(0),
+            stall,
+        }
+    }
+
+    /// Tracks reader progress for one wait: true once the reader has taken
+    /// nothing for `stall`. Call it each time the waiter wakes.
+    fn stalled(&self, mark: &mut (u64, std::time::Instant)) -> bool {
+        let now = self.drained.load(std::sync::atomic::Ordering::Relaxed);
+        if now != mark.0 {
+            *mark = (now, std::time::Instant::now());
+            false
+        } else {
+            mark.1.elapsed() >= self.stall
         }
     }
 
@@ -188,16 +264,24 @@ impl Ring {
         self.lock().len()
     }
 
-    /// Queue every sample, waiting for room as needed. Stops early, returning
-    /// how many went in, if `give_up` says so while the ring is full.
-    fn push_blocking(&self, samples: &[f32], give_up: impl Fn() -> bool) -> usize {
+    /// Queue every sample, waiting for room as needed. Stops early with
+    /// `GaveUp` if `give_up` says so while the ring is full, or with `Stalled`
+    /// if the reader takes nothing for the stall timeout.
+    fn push_blocking(&self, samples: &[f32], give_up: impl Fn() -> bool) -> Result<(), Stop> {
         let mut pushed = 0;
         let mut q = self.lock();
+        let mut mark = (
+            self.drained.load(std::sync::atomic::Ordering::Relaxed),
+            std::time::Instant::now(),
+        );
         while pushed < samples.len() {
             let room = self.capacity - q.len();
             if room == 0 {
                 if give_up() {
-                    break;
+                    return Err(Stop::GaveUp);
+                }
+                if self.stalled(&mut mark) {
+                    return Err(Stop::Stalled);
                 }
                 q = self
                     .changed
@@ -210,7 +294,7 @@ impl Ring {
             q.extend(&samples[pushed..pushed + take]);
             pushed += take;
         }
-        pushed
+        Ok(())
     }
 
     /// Move as many queued samples as fit into `out`, without waiting for more.
@@ -224,21 +308,30 @@ impl Ring {
             n
         };
         if n > 0 {
+            self.drained
+                .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
             self.changed.notify_all();
         }
         n
     }
 
-    /// Wait until the reader has taken everything. Returns false if `give_up`
-    /// said so first.
-    fn wait_drained(&self, give_up: impl Fn() -> bool) -> bool {
+    /// Wait until the reader has taken everything, or stop early as
+    /// `push_blocking` does.
+    fn wait_drained(&self, give_up: impl Fn() -> bool) -> Result<(), Stop> {
         let mut q = self.lock();
+        let mut mark = (
+            self.drained.load(std::sync::atomic::Ordering::Relaxed),
+            std::time::Instant::now(),
+        );
         loop {
             if q.is_empty() {
-                return true;
+                return Ok(());
             }
             if give_up() {
-                return false;
+                return Err(Stop::GaveUp);
+            }
+            if self.stalled(&mut mark) {
+                return Err(Stop::Stalled);
             }
             q = self
                 .changed
@@ -254,12 +347,12 @@ pub use audio::{AudioError, AudioSink};
 
 #[cfg(feature = "playback")]
 mod audio {
-    use super::{Ring, Sink, interleave};
+    use super::{Latch, Ring, Sink, Stop, interleave};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{FromSample, Sample, SampleFormat, SizedSample};
     use std::fmt;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     /// How much audio the ring holds before `write` blocks: long enough to ride
@@ -278,7 +371,7 @@ mod audio {
         SampleFormat::U8,
     ];
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum AudioError {
         /// The host reports no default output device.
         NoDevice,
@@ -294,6 +387,8 @@ mod audio {
         PlayStream(cpal::Error),
         /// Reported by the device while the stream was running.
         Stream(cpal::Error),
+        /// The device stopped calling back while samples were waiting.
+        Stalled,
     }
 
     impl fmt::Display for AudioError {
@@ -325,6 +420,7 @@ mod audio {
                 Self::BuildStream(e) => write!(f, "could not open the output stream: {e}"),
                 Self::PlayStream(e) => write!(f, "could not start the output stream: {e}"),
                 Self::Stream(e) => write!(f, "the output stream failed: {e}"),
+                Self::Stalled => f.write_str("the audio device stopped consuming samples"),
             }
         }
     }
@@ -335,7 +431,7 @@ mod audio {
                 Self::Configs(e) | Self::BuildStream(e) | Self::PlayStream(e) | Self::Stream(e) => {
                     Some(e)
                 }
-                Self::NoDevice | Self::UnsupportedRate { .. } => None,
+                Self::NoDevice | Self::UnsupportedRate { .. } | Self::Stalled => None,
             }
         }
     }
@@ -361,7 +457,7 @@ mod audio {
     pub struct AudioSink {
         stream: Option<cpal::Stream>,
         ring: Arc<Ring>,
-        failed: Arc<Mutex<Option<cpal::Error>>>,
+        failed: Arc<Latch<cpal::Error>>,
         /// The largest buffer, in frames, the device has asked for so far.
         period: Arc<AtomicUsize>,
         sample_rate: u32,
@@ -413,7 +509,7 @@ mod audio {
 
             let capacity = (f64::from(sample_rate) * BUFFER_SECONDS) as usize;
             let ring = Arc::new(Ring::new(capacity));
-            let failed = Arc::new(Mutex::new(None));
+            let failed = Arc::new(Latch::new());
             let period = Arc::new(AtomicUsize::new(0));
 
             let stream = match format {
@@ -443,16 +539,11 @@ mod audio {
             })
         }
 
-        /// Take the error the device reported, if any.
-        fn take_failure(&self) -> Result<(), AudioError> {
-            match self.failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                Some(e) => Err(AudioError::Stream(e)),
-                None => Ok(()),
-            }
-        }
-
-        fn has_failed(failed: &Mutex<Option<cpal::Error>>) -> bool {
-            failed.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        /// The error the device reported, if any. Sticky: the failure stays
+        /// stored, so every later call returns it again and nothing can block
+        /// on a dead stream after the first report.
+        fn check_failure(&self) -> Result<(), AudioError> {
+            self.failed.check().map_err(AudioError::Stream)
         }
     }
 
@@ -460,7 +551,7 @@ mod audio {
         device: &cpal::Device,
         config: cpal::StreamConfig,
         ring: &Arc<Ring>,
-        failed: &Arc<Mutex<Option<cpal::Error>>>,
+        failed: &Arc<Latch<cpal::Error>>,
         period: &Arc<AtomicUsize>,
     ) -> Result<cpal::Stream, cpal::Error>
     where
@@ -492,11 +583,8 @@ mod audio {
                 if is_transient(err.kind()) {
                     return;
                 }
-                let mut slot = failed.lock().unwrap_or_else(|e| e.into_inner());
                 // Keep the first failure; later ones are usually its echoes.
-                if slot.is_none() {
-                    *slot = Some(err);
-                }
+                failed.set_first(err);
             },
             None,
         )
@@ -505,17 +593,23 @@ mod audio {
     impl Sink for AudioSink {
         type Error = AudioError;
 
+        /// Fails with `Stream` on every call once the device has reported a
+        /// failure, and with `Stalled` if the device stops draining for about
+        /// two seconds.
         fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
-            self.take_failure()?;
+            self.check_failure()?;
             let failed = Arc::clone(&self.failed);
-            self.ring
-                .push_blocking(samples, || Self::has_failed(&failed));
-            self.take_failure()
+            match self.ring.push_blocking(samples, || failed.is_set()) {
+                Ok(()) | Err(Stop::GaveUp) => {}
+                Err(Stop::Stalled) => return Err(AudioError::Stalled),
+            }
+            self.check_failure()
         }
 
         fn finish(&mut self) -> Result<(), AudioError> {
             let failed = Arc::clone(&self.failed);
-            if self.ring.wait_drained(|| Self::has_failed(&failed)) {
+            let drained = self.ring.wait_drained(|| failed.is_set());
+            if drained.is_ok() {
                 // The last samples left the ring but may still sit in the
                 // device's own buffer; give it one buffer's worth to play out.
                 let frames = self.period.load(Ordering::Relaxed).max(1024);
@@ -528,7 +622,11 @@ mod audio {
                 // drop does not need, so its failure is not an error here.
                 let _ = stream.pause();
             }
-            self.take_failure()
+            self.check_failure()?;
+            match drained {
+                Err(Stop::Stalled) => Err(AudioError::Stalled),
+                _ => Ok(()),
+            }
         }
     }
 }
@@ -748,7 +846,7 @@ mod tests {
     #[test]
     fn ring_drains_in_order_and_reports_how_much_it_gave() {
         let ring = Ring::new(8);
-        ring.push_blocking(&[0.1, 0.2, 0.3], || false);
+        ring.push_blocking(&[0.1, 0.2, 0.3], || false).unwrap();
         let mut out = [0.0f32; 5];
         assert_eq!(ring.drain_into(&mut out), 3);
         assert_eq!(&out[..3], &[0.1, 0.2, 0.3]);
@@ -767,11 +865,17 @@ mod tests {
             let done = Arc::clone(&done);
             std::thread::spawn(move || {
                 let samples: Vec<f32> = (0..10).map(|i| i as f32).collect();
-                ring.push_blocking(&samples, || false);
+                ring.push_blocking(&samples, || false).unwrap();
                 done.store(true, Ordering::SeqCst);
             })
         };
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Wait (bounded) until the ring is full, then check the writer is
+        // still stuck behind it rather than guessing with a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ring.len() < 4 {
+            assert!(std::time::Instant::now() < deadline, "ring never filled");
+            std::thread::yield_now();
+        }
         assert!(
             !done.load(Ordering::SeqCst),
             "the writer ran past a full ring"
@@ -794,8 +898,8 @@ mod tests {
     fn ring_writer_gives_up_when_told_to() {
         // A dead stream never drains; the writer must not hang on it.
         let ring = Ring::new(2);
-        let pushed = ring.push_blocking(&[1.0, 2.0, 3.0, 4.0], || true);
-        assert_eq!(pushed, 2, "only what fitted before the abort");
+        let r = ring.push_blocking(&[1.0, 2.0, 3.0, 4.0], || true);
+        assert_eq!(r, Err(Stop::GaveUp));
         assert_eq!(ring.len(), 2);
     }
 
@@ -803,7 +907,7 @@ mod tests {
     fn ring_wait_drained_returns_once_empty() {
         use std::sync::Arc;
         let ring = Arc::new(Ring::new(4));
-        ring.push_blocking(&[1.0, 2.0], || false);
+        ring.push_blocking(&[1.0, 2.0], || false).unwrap();
         let reader = {
             let ring = Arc::clone(&ring);
             std::thread::spawn(move || {
@@ -812,12 +916,82 @@ mod tests {
                 ring.drain_into(&mut out);
             })
         };
-        assert!(ring.wait_drained(|| false));
+        assert_eq!(ring.wait_drained(|| false), Ok(()));
         assert_eq!(ring.len(), 0);
         reader.join().unwrap();
         // Told to give up with samples still queued, it reports that.
-        ring.push_blocking(&[1.0], || false);
-        assert!(!ring.wait_drained(|| true));
+        ring.push_blocking(&[1.0], || false).unwrap();
+        assert_eq!(ring.wait_drained(|| true), Err(Stop::GaveUp));
+    }
+
+    #[test]
+    fn a_stored_failure_releases_a_blocked_writer() {
+        use std::sync::Arc;
+        let ring = Arc::new(Ring::new(2));
+        let latch = Arc::new(Latch::<String>::new());
+        ring.push_blocking(&[1.0, 2.0], || false).unwrap();
+        let writer = {
+            let (ring, latch) = (Arc::clone(&ring), Arc::clone(&latch));
+            std::thread::spawn(move || ring.push_blocking(&[3.0], || latch.is_set()))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        latch.set_first("boom".into());
+        assert_eq!(writer.join().unwrap(), Err(Stop::GaveUp));
+    }
+
+    #[test]
+    fn a_failure_is_sticky_across_later_writes_and_finish() {
+        let ring = Ring::new(2);
+        let latch = Latch::<String>::new();
+        assert_eq!(latch.check(), Ok(()));
+        ring.push_blocking(&[1.0, 2.0], || false).unwrap();
+        latch.set_first("first".into());
+        latch.set_first("echo".into());
+        // Nothing drains, yet every later wait returns at once with the same error.
+        for _ in 0..2 {
+            assert_eq!(latch.check(), Err("first".to_string()));
+            assert_eq!(
+                ring.push_blocking(&[3.0], || latch.is_set()),
+                Err(Stop::GaveUp)
+            );
+        }
+        assert_eq!(latch.check(), Err("first".to_string()));
+        assert_eq!(ring.wait_drained(|| latch.is_set()), Err(Stop::GaveUp));
+        assert_eq!(latch.check(), Err("first".to_string()));
+    }
+
+    #[test]
+    fn a_silent_device_stalls_the_writer_and_the_drain_wait() {
+        let stall = std::time::Duration::from_millis(60);
+        let ring = Ring::with_stall(2, stall);
+        let start = std::time::Instant::now();
+        assert_eq!(
+            ring.push_blocking(&[1.0, 2.0, 3.0], || false),
+            Err(Stop::Stalled)
+        );
+        assert!(start.elapsed() >= stall);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(ring.wait_drained(|| false), Err(Stop::Stalled));
+    }
+
+    #[test]
+    fn a_slow_but_moving_reader_does_not_stall() {
+        use std::sync::Arc;
+        let ring = Arc::new(Ring::with_stall(1, std::time::Duration::from_millis(100)));
+        let reader = {
+            let ring = Arc::clone(&ring);
+            std::thread::spawn(move || {
+                let mut out = [0.0f32; 1];
+                let mut got = 0;
+                while got < 8 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    got += ring.drain_into(&mut out);
+                }
+            })
+        };
+        let samples = [0.5f32; 8];
+        assert_eq!(ring.push_blocking(&samples, || false), Ok(()));
+        reader.join().unwrap();
     }
 
     #[cfg(feature = "playback")]
