@@ -81,7 +81,10 @@ Undocumented bytes stay zero. Output: `sid-play/crates/sid-play/src/poweron.rs`
 Pass thresholds (all must pass):
 - At least 90% of the 1024 bytes match the measured pattern.
 - All 17 fixture tunes (16 HVSC plus The Last Ninja) render with tonality median
-  within 0.05 of the `gpl-data` build.
+  within 0.05 of the same default build run with the measured image loaded through
+  `render --poweron FILE` (a new, licence-neutral option that loads `$0000-$03FF`
+  from a 1024-byte file). Comparing like with like isolates the power-on image from
+  the other clean/measured differences.
 
 ## Finale: delete the crate (one breaking release)
 
