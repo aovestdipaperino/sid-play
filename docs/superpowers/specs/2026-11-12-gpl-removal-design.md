@@ -1,10 +1,10 @@
-# Removing sid-gpl-data: design
+# Dropping the sid-gpl-data dependency: design
 
 Date: 2026-11-12. Status: approved in brainstorming.
 
 ## Goal
 
-Delete the GPL-2.0 crate `sid-gpl-data` and the `gpl-data` feature from `mos6581` and
+Drop the GPL-2.0 crate `sid-gpl-data` and the `gpl-data` feature from `mos6581` and
 `sid-play`, after replacing the items that matter with clean-room models that pass
 fidelity thresholds fixed in this document.
 
@@ -93,14 +93,15 @@ Pass thresholds (all must pass):
   gpl paths in docs and HANDSOFF.md. Publish 0.2.0.
 - The gap tooling moves to an unpublished evaluator area under the session
   scratchpad; it is not committed to any public repo.
-- `sid-gpl-data`: a final 0.1.2 whose README says it is deprecated and unused, then
-  yank all versions and archive the GitHub repo.
+- `sid-gpl-data`: kept as is, crate and GitHub repo both stay published and
+  unarchived. Only its README gains a note that mos6581 and sid-play no longer
+  depend on it (from 0.2.0); the data itself is untouched.
 - Check: `cargo tree` in both repos shows no `sid-gpl-data`; no `gpl-data` string
   remains outside changelogs and provenance history; all tests pass; the 17 tunes
   play.
 
 ## Order of work
 
-Cutoff curve, then combined waveforms, then power-on, then the finale. Each item is
+Cutoff curve, then combined waveforms, then power-on, then the finale (dropping the dependency; the sid-gpl-data crate and repo are kept). Each item is
 its own task cycle: author, evaluate (up to 3 rounds), review, commit with
 `provenance.md` updated.
