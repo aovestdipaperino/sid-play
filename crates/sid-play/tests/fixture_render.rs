@@ -9,14 +9,16 @@ use std::process::Command;
 // The fixtures play through a low-pass with the cutoff register at zero, so how
 // loud they are depends on how low the closed corner sits. The built-in curve
 // closes lower than the measured one, so its floor is lower; both must be audible.
+// Floors are about half the observed values: scale rms 1362 and irq tail rms 1067
+// with the measured data, 53 and 27 with the built-in curve.
 #[cfg(feature = "gpl-data")]
 const MIN_RMS: f64 = 500.0;
 #[cfg(not(feature = "gpl-data"))]
-const MIN_RMS: f64 = 20.0;
+const MIN_RMS: f64 = 26.0; // observed 53
 #[cfg(feature = "gpl-data")]
 const MIN_TAIL_RMS: f64 = 300.0;
 #[cfg(not(feature = "gpl-data"))]
-const MIN_TAIL_RMS: f64 = 15.0;
+const MIN_TAIL_RMS: f64 = 13.0; // observed 27
 
 fn harness() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_render"))

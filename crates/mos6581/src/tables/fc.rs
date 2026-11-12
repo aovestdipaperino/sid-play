@@ -116,10 +116,16 @@ mod tests {
     #[test]
     fn the_8580_curve_is_the_linear_one() {
         let t = cutoff_table_8580();
-        assert!((29.0..=31.0).contains(&t.f0[0]), "fc=0 gave {}", t.f0[0]);
+        let points = sid_gpl_data::CUTOFF_POINTS_8580;
+        let (first, last) = (points[0].1, points[points.len() - 1].1);
         assert!(
-            (12_400.0..=12_600.0).contains(&t.f0[2047]),
-            "fc=2047 gave {}",
+            (t.f0[0] - first).abs() < 1e-6,
+            "fc=0 gave {}, data says {first}",
+            t.f0[0]
+        );
+        assert!(
+            (t.f0[2047] - last).abs() < 1e-6,
+            "fc=2047 gave {}, data says {last}",
             t.f0[2047]
         );
     }

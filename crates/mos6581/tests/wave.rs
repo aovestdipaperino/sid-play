@@ -210,7 +210,7 @@ fn noise_rate_follows_the_frequency_register() {
 fn noise_is_loud_symmetric_about_mid_scale_and_reproducible() {
     // The waveform output is unsigned 12-bit like every other shape; centring to
     // zero happens later, in the voice's amplitude stage. FREQ is high enough that
-    // the clock bit rises the register thousands of times over the sample, so this
+    // the clock bit clocks the register thousands of times over the sample, so this
     // measures the shift register rather than its seed value.
     let mut a = wave_obj();
     let mut b = wave_obj();
@@ -516,7 +516,8 @@ fn release_takes_the_signal_swing_down_to_nothing() {
         release: 0x2,
     };
     // Let the release finish before measuring. A falling sweep at rate nibble 2
-    // takes well under 100_000 cycles, so that is comfortably past the end; measuring across the ramp would just re-measure how loud it was.
+    // takes well under 100_000 cycles, so that is comfortably past the end;
+    // measuring across the ramp would just re-measure how loud it was.
     for _ in 0..100_000 {
         v.tick(1000, 0, wave::SAWTOOTH, off, false);
     }

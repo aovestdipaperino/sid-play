@@ -46,7 +46,7 @@ row and the `render.rs` row).
 | src/extfilt.rs | bypass keeps the high-pass running | own | reSID's disabled path differs (subtracts mixer DC, no high-pass) | Own derivation |
 | src/filter.rs | two-integrator state-variable loop, `high = band/Q - low - input`, both integrators subtracting | textbook / 6581 schematic | Chamberlin state-variable filter (Musical Applications of Microprocessors, 1985). Yannes interview (https://landley.net/history/mirror/commodore/yannes.html): "The Filter was a classic multi-mode (state variable) VCF design." US patent 4,677,890 is the SID patent (Yannes, Commodore, "Sound interface circuit") but its text only says "The filter 65 is implemented as shown in FIG. 15" and does not state the integrator signs, so the earlier claim that it shows inverting integrators is dropped. The signs (both integrators subtracting) are our own sign convention for a state-variable loop, equivalent under negation of the state | Public fact (topology) / own derivation (signs) |
 | src/filter.rs | `set_resonance`: `1/Q = 1/(0.707 + res/15)`, and initial `inv_q = 1/0.707` | reSID | equals reSID filter.cc `_1024_div_Q = 1024.0/(0.707 + 1.0*res/0x0f)` with its "Q has approximate range [0.707, 1.7]" model; the datasheet gives only "16 resonance settings" | **Borrowed (new)**; values moved to sid-gpl-data; clean-room default in mos6581 (clean_chip_data.rs) |
-| src/filter.rs | `MIXER_DC = -1/18` | reSID | equals reSID filter.cc `mixer_DC = -0xfff*0xff/18 >> 7`, from reSID's own pin voltage measurements (-0.06 V / 1.05 V); pinned again in tests/filter.rs | **Borrowed (new)**; values moved to sid-gpl-data; clean-room default in mos6581 (clean_chip_data.rs) |
+| src/filter.rs | `MIXER_DC = -1/18` | reSID | equals reSID filter.cc `mixer_DC = -0xfff*0xff/18 >> 7`, from reSID's own pin voltage measurements (-0.06 V / 1.05 V); tests/filter.rs reads it from sid_gpl_data under the feature | **Borrowed (new)**; values moved to sid-gpl-data; clean-room default in mos6581 (clean_chip_data.rs) |
 | src/filter.rs | routing bits, taps, voice-3-off only when unrouted, 4-bit volume `/15`, `set_fc` clamp at clock/16 | datasheet / own | $D417/$D418 bit layout and 3OFF disconnecting voice 3 from the direct (unfiltered) path per datasheet; clamp is own stability bound (w0 < 0.4) | Public fact / own derivation |
 | src/voice.rs | `WAVE_ZERO = 0x380`, `VOICE_DC = 0x800 * 0xff`, output `(wave - WAVE_ZERO) * level + VOICE_DC` | reSID | equal reSID voice.cc `wave_zero = 0x380; voice_DC = 0x800*0xff;` and its `(wave.output() - wave_zero)*envelope.output() + voice_DC`, from reSID's measurement of one chip ($D41B = $38 at 5.94 V); pinned behaviourally in tests/wave.rs | **Borrowed (new)**; values moved to sid-gpl-data; clean-room default in mos6581 (clean_chip_data.rs) |
 | src/voice.rs | `FULL_SCALE = 0x0fff * 0xff` | own | 12-bit waveform times 8-bit envelope | Own derivation |
@@ -68,8 +68,8 @@ row and the `render.rs` row).
 | examples/render.rs | PSID parsing, C64 memory-map writes ($02A6, $2D/$2F/$31/$AE, $AC), CIA timer A model, call stubs, 50/60 Hz frame clock | public / own | PSID header per HVSC's SID_file_format.txt; addresses per the C64 memory map (Mapping the Commodore 64); CIA per the 6526 datasheet; harness design is own (no libsidplayfp psiddrv code) | Public fact / own derivation: no borrowed material (apart from POWERON above) |
 | tools/make_irq_fixture.py | IRQ test tune | own | hand-assembled 6502, commented opcode by opcode | Own derivation: no borrowed material |
 | tests/fixtures/scale.sid, irq.sid | test tunes | own | own PSID headers ("SCALA TEST", "HARNESS") and code | Own derivation: no borrowed material |
-| tests/envelope.rs | 756-period falling sweep (`162*1 + 39*2 + 28*4 + 12*8 + 8*16 + 6*30`) | follows `EXPONENTIAL_PERIOD` | arithmetic consequence of the breakpoints; the same figure appears in reSID envelope.cc's comment | Own derivation (depends on a Borrowed row) |
-| tests/filter.rs, tests/wave.rs, tests/render.rs, tests/fixture_render.rs | behavioural tests | own | assertions on behaviour; values pinned from source rows (e.g. -1/18 in tests/filter.rs) move with those rows | Own derivation: no borrowed material of their own |
+| tests/envelope.rs | envelope sweep expectations | read from `sid_gpl_data` under the `gpl-data` feature | no literal copy of the breakpoints or the sweep length lives in the test | Own derivation: no borrowed material of its own |
+| tests/filter.rs, tests/wave.rs, tests/render.rs, tests/fixture_render.rs | behavioural tests | own | assertions on behaviour; expected values are read from `sid_gpl_data` under the `gpl-data` feature, so they move with those rows | Own derivation: no borrowed material of their own |
 
 ## Clean-room defaults
 
@@ -94,7 +94,7 @@ they come from `sid-gpl-data`.
 | `NOISE_CLOCK_BIT` | `19` | unsourced own choice, constrained by the Yannes interview ("an intermediate bit") and the datasheet noise range; slowest bit giving a shift rate of at least 40 kHz at the top setting |
 | `NOISE_SHIFT_RELOAD` | `0x7F_FFFF` | unsourced own choice; all ones is a valid, maximally distant-from-lockup seed |
 
-Other defaults introduced with the `gpl-data` feature:
+Other defaults used without the `gpl-data` feature:
 
 - Combined waveform tables: the bitwise AND of the pure waveforms
   (`crates/mos6581/src/tables/default.rs`), our own derivation; the measured tables
@@ -104,3 +104,30 @@ Other defaults introduced with the `gpl-data` feature:
   curves are used only with `gpl-data`.
 - Power-on RAM pattern in `sid-play`: all zeros without `gpl-data`; libsidplayfp's
   captured pattern only with it.
+
+## Known default-build fidelity gaps
+
+The default build (without `gpl-data`) is clean-room and measurably less faithful
+than the build with the measured data. The known differences:
+
+- Cutoff closed corner: the default curve closes at 30 Hz (datasheet nominal, 2200
+  pF) while the measured curve closes at about 200 Hz. Tunes and fixtures that play
+  through a mostly closed low-pass come out much quieter in the default build. The
+  scale fixture renders at rms 53 in the default build and 1362 with `gpl-data`;
+  the irq fixture tail renders at rms 27 and 1067 respectively
+  (`crates/sid-play/tests/fixture_render.rs`).
+- Combined waveforms: the default tables are the bitwise AND of the pure waveforms,
+  which differs from the measured tables. From
+  `cargo test -p mos6581 --features gpl-data --test gap -- --nocapture`:
+  `GAP st: rms 83.8 max 170 (of 255)`, `GAP p_t: rms 139.2 max 255 (of 255)`,
+  `GAP ps_: rms 140.9 max 254 (of 255)`, `GAP pst: rms 84.4 max 170 (of 255)`.
+- The default `pst` table equals `st` by construction, so the mutual-distinctness
+  test cannot catch a pst to st fall-through in the default build. The `gpl-data`
+  build covers it.
+- Voice model: the default voice is a centred DAC, which differs from the measured
+  asymmetric one. The gated test `the_output_is_asymmetric_as_the_hardware_is`
+  covers the measured behaviour.
+
+Candidate for the clean-room cutoff task: derive the closed corner from the
+datasheet formula with the C64's actual filter capacitors (to be sourced from a
+public schematic), not tuned to measured data.
