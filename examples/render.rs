@@ -9,9 +9,7 @@
 //! `cargo run --release --example render -- tune.sid [--subsong N] [--seconds S]
 //!         [--ntsc] [--probe] [--out file.wav]`
 
-use lib6502::Cpu;
-use lib6502::Variant;
-use lib6502::bus::Bus;
+use mos6510::{Bus, Cpu};
 use rust_sid::sink::{SampleFormat, Sink, WavSink, WavSpec};
 use rust_sid::{Model, Sid};
 use std::cell::{Cell, RefCell};
@@ -21,8 +19,6 @@ use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-#[path = "render/cpu_fixups.rs"]
-mod cpu_fixups;
 #[path = "render/poweron_table.rs"]
 mod poweron_table;
 
@@ -66,14 +62,14 @@ fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
 const IRQ_VECTOR: u16 = 0xfffe;
 const RESET_VECTOR: u16 = 0xfffc;
 
-/// Status bits, as the processor lays them out.
+/// The status register's interrupt-disable bit.
 const I_FLAG: u8 = 0x04;
-const B_FLAG: u8 = 0x10;
-const U_FLAG: u8 = 0x20;
-/// The 6502 interrupt entry takes seven cycles.
-const IRQ_CYCLES: u8 = 7;
-/// The stack lives on page 1.
-const STACK_PAGE: u16 = 0x0100;
+/// The 6510 port as the Kernal leaves it: `$00` (direction) = `$2F`, `$01`
+/// (data) = `$37`. The input pins read the cassette sense line high and the
+/// unconnected bits 6-7 long faded to 0, so `$01` reads back `$37`.
+const PORT_DDR: u8 = 0x2f;
+const PORT_DATA: u8 = 0x37;
+const PORT_PINS: u8 = 0x10;
 /// The two ROM areas. With no ROM image installed these read as zeros, so a tune
 /// that reaches them executes nothing.
 const ROM_BASIC: (u16, u16) = (0xa000, 0xbfff);
@@ -85,35 +81,6 @@ const VEC_ROM: (u16, u16) = (0xfffa, 0xffff);
 /// How many distinct sites `--trace` remembers before it stops widening its
 /// tables. Counts for sites already recorded keep accumulating.
 const TRACE_LIMIT: usize = 400;
-
-/// The mnemonic of an undocumented opcode that `lib6502` 0.2.2 executes as an
-/// empty stub: it consumes the operand and cycles but changes no register,
-/// flag or memory. The undocumented NOPs and `$EB` (SBC) are implemented
-/// correctly upstream and are not listed.
-fn stubbed_opcode(op: u8) -> Option<&'static str> {
-    Some(match op {
-        0x03 | 0x07 | 0x0F | 0x13 | 0x17 | 0x1B | 0x1F => "SLO",
-        0x23 | 0x27 | 0x2F | 0x33 | 0x37 | 0x3B | 0x3F => "RLA",
-        0x43 | 0x47 | 0x4F | 0x53 | 0x57 | 0x5B | 0x5F => "SRE",
-        0x63 | 0x67 | 0x6F | 0x73 | 0x77 | 0x7B | 0x7F => "RRA",
-        0x83 | 0x87 | 0x8F | 0x97 => "SAX",
-        0xA3 | 0xA7 | 0xAB | 0xAF | 0xB3 | 0xB7 | 0xBF => "LAX",
-        0xC3 | 0xC7 | 0xCF | 0xD3 | 0xD7 | 0xDB | 0xDF => "DCP",
-        0xE3 | 0xE7 | 0xEF | 0xF3 | 0xF7 | 0xFB | 0xFF => "ISC",
-        0x0B | 0x2B => "ANC",
-        0x4B => "ALR",
-        0x6B => "ARR",
-        0x8B => "XAA",
-        0xCB => "AXS",
-        0x93 | 0x9F => "AHX",
-        0x9B => "TAS",
-        0x9C => "SHY",
-        0x9E => "SHX",
-        0xBB => "LAS",
-        0x02 | 0x12 | 0x22 | 0x32 | 0x42 | 0x52 | 0x62 | 0x72 | 0x92 | 0xB2 | 0xD2 | 0xF2 => "KIL",
-        _ => return None,
-    })
-}
 
 fn in_range(addr: u16, range: (u16, u16)) -> bool {
     addr >= range.0 && addr <= range.1
@@ -150,9 +117,6 @@ struct Trace {
     run_pc: BTreeMap<u16, u64>,
     init_cycles: u64,
     init_returned: bool,
-    /// Undocumented opcodes the CPU fetched that `lib6502` stubs out, keyed by
-    /// (site, opcode). Any count here means the tune ran code we execute wrong.
-    stubbed: BTreeMap<(u16, u8), u64>,
 }
 
 impl Trace {
@@ -167,21 +131,12 @@ impl Trace {
             run_pc: BTreeMap::new(),
             init_cycles: 0,
             init_returned: false,
-            stubbed: BTreeMap::new(),
         }
     }
 
-    /// `fetch` is true when the processor will fetch a new opcode at `pc` on
-    /// this cycle.
-    fn note(&mut self, pc: u16, fetch: bool, ram: &[u8; 0x1_0000]) {
+    fn note(&mut self, pc: u16, ram: &[u8; 0x1_0000]) {
         if !self.enabled {
             return;
-        }
-        if fetch {
-            let op = ram[usize::from(pc)];
-            if stubbed_opcode(op).is_some() {
-                *self.stubbed.entry((pc, op)).or_insert(0) += 1;
-            }
         }
         if self.phase == Phase::Init {
             self.init_cycles += 1;
@@ -557,7 +512,7 @@ impl Machine {
     }
 }
 
-impl Bus for Machine {
+impl Machine {
     fn read(&self, address: u16) -> u8 {
         let a = usize::from(address);
         if self.trace.get() && (in_range(address, ROM_BASIC) || in_range(address, ROM_KERNAL)) {
@@ -629,9 +584,6 @@ impl Bus for Machine {
             _ => self.ram[a] = value,
         }
     }
-
-    /// The harness loads the tune itself, out of the PSID container.
-    fn load(&mut self, _path: &str, _address: u16) {}
 }
 
 /// The bus handle the processor holds. The CPU owns its bus, so this is how the
@@ -639,16 +591,12 @@ impl Bus for Machine {
 struct BusHandle(Rc<RefCell<Machine>>);
 
 impl Bus for BusHandle {
-    fn read(&self, address: u16) -> u8 {
+    fn read(&mut self, address: u16) -> u8 {
         self.0.borrow().read(address)
     }
 
     fn write(&mut self, address: u16, value: u8) {
         self.0.borrow_mut().write(address, value);
-    }
-
-    fn load(&mut self, path: &str, address: u16) {
-        self.0.borrow_mut().load(path, address);
     }
 }
 
@@ -694,35 +642,6 @@ fn write_machine_state(ram: &mut [u8; 0x1_0000], pal: bool, load: u16, end: u16)
     }
     ram[0x00ac] = (load & 0xff) as u8;
     ram[0x00ad] = (load >> 8) as u8;
-}
-
-fn push_byte(cpu: &mut Cpu, machine: &mut Machine, value: u8) {
-    machine.write(STACK_PAGE + u16::from(cpu.sp), value);
-    cpu.sp = cpu.sp.wrapping_sub(1);
-}
-
-/// Enter a hardware IRQ the way the 6502 does.
-///
-/// The processor crate's own entry point is wrong for this: it raises the
-/// disable flag *before* pushing the status byte, so the saved status carries
-/// I set, every `RTI` restores interrupts masked, and only one interrupt can
-/// ever be taken. Hardware pushes the status as it was at the moment of the
-/// interrupt. The registers and the stack are both reachable from here, so the
-/// frame is pushed by hand: return address high, then low, then status with B
-/// clear and the unused bit set, exactly as `RTI` expects to find it.
-fn irq_entry(cpu: &mut Cpu, machine: &mut Machine) {
-    let return_pc = cpu.pc;
-    // Only taken while I is clear, so the pushed status carries I clear too.
-    let pushed_status = (cpu.status & !B_FLAG) | U_FLAG;
-    let vector = u16::from_le_bytes([machine.read(IRQ_VECTOR), machine.read(IRQ_VECTOR + 1)]);
-
-    push_byte(cpu, machine, (return_pc >> 8) as u8);
-    push_byte(cpu, machine, (return_pc & 0xff) as u8);
-    push_byte(cpu, machine, pushed_status);
-
-    cpu.status |= I_FLAG;
-    cpu.pc = vector;
-    cpu.cycles = IRQ_CYCLES;
 }
 
 struct Options {
@@ -802,28 +721,28 @@ fn setup(model: Model, loaded: &Loaded, pal: bool, stubs: Stubs) -> Rc<RefCell<M
 
 /// Start a processor on a prepared machine and run its init to completion.
 fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) -> (Cpu, Harness) {
-    let mut cpu = Cpu::new(Box::new(BusHandle(Rc::clone(machine))), 0);
-    cpu.change_variant(Variant::NMOS);
-    cpu.set_illegal_opcodes(true);
-    cpu.reset();
+    let mut cpu = Cpu::new(mos6510::Model::Mos6510);
+    cpu.set_port_registers(PORT_DDR, PORT_DATA);
+    cpu.set_port_input(PORT_PINS);
+    cpu.s = 0xfd;
     // The PSID convention passes the starting subsong to the init routine in A,
     // 0-based. Init is entered with interrupts disabled, as on a real machine;
     // a frame clock that waited for the processor's own I flag to be clear would
     // never fire for a tune that never re-enables them.
     cpu.a = song - 1;
-    cpu.status |= I_FLAG;
-    cpu.pc = stubs.init;
+    cpu.p |= I_FLAG;
+    cpu.jump(stubs.init);
 
     let mut harness = Harness::new(Rc::clone(machine), clock_hz, stubs);
     let mut budget = 20_000_000u64;
-    while cpu.pc != stubs.halt && budget > 0 {
+    while !(cpu.at_instruction_boundary() && cpu.pc == stubs.halt) && budget > 0 {
         harness.cycle(&mut cpu);
         budget -= 1;
     }
     // Whose handler is installed decides who drives the frame. A tune with no
     // play address at all is driven purely by its own interrupts.
     harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.halt;
-    harness.trace.init_returned = cpu.pc == stubs.halt;
+    harness.trace.init_returned = cpu.at_instruction_boundary() && cpu.pc == stubs.halt;
     harness.trace.phase = Phase::Run;
     harness.machine.borrow_mut().running.set(true);
     (cpu, harness)
@@ -831,6 +750,8 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
 
 /// Everything the cycle loop carries between iterations.
 struct Harness {
+    /// The processor's view of the machine, ticked once per cycle.
+    bus: BusHandle,
     machine: Rc<RefCell<Machine>>,
     stubs: Stubs,
     /// False for a tune with no play address, which must never be called.
@@ -860,6 +781,7 @@ impl Harness {
         };
         let tracing = machine.borrow().trace.get();
         Self {
+            bus: BusHandle(Rc::clone(&machine)),
             machine,
             stubs,
             has_play_stub,
@@ -893,7 +815,7 @@ impl Harness {
         if self.trace.enabled {
             let pc = cpu.pc;
             let m = self.machine.borrow();
-            self.trace.note(pc, cpu.cycles == 0, &m.ram);
+            self.trace.note(pc, &m.ram);
         }
         let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
@@ -913,32 +835,25 @@ impl Harness {
             // while a previous play call has not returned, is held rather than
             // dropped: losing it would silently slow every tune whose play
             // routine happens to straddle the tick.
-            if self.frame_due && cpu.cycles == 0 && cpu.pc == self.stubs.halt {
+            if self.frame_due && cpu.at_instruction_boundary() && cpu.pc == self.stubs.halt {
                 self.frame_due = false;
                 self.frame_cycles = 0;
-                cpu.pc = self.stubs.play;
+                cpu.jump(self.stubs.play);
                 self.frames += 1;
             }
         } else {
             // The tune owns the interrupt vector, so it is driven by its CIA the
-            // same way it is on a real machine. There is no remembered request
-            // here on purpose: the CIA's line is level-triggered and stays
-            // asserted until the handler acknowledges it, so the line itself is
-            // what has to be tested. Latching the request instead would re-fire
-            // it the moment the handler returns, long after the CIA released it.
-            let asserted = self.machine.borrow().cia.borrow().line();
-            if asserted && cpu.cycles == 0 && (cpu.status & I_FLAG) == 0 {
-                irq_entry(cpu, &mut self.machine.borrow_mut());
-                self.irqs += 1;
-            }
+            // same way it is on a real machine: the CIA's level-triggered line
+            // is wired to the processor's, which samples it where the hardware
+            // does.
+            cpu.set_irq(self.machine.borrow().cia.borrow().line());
         }
-
-        // lib6502 gets several core instructions wrong; see cpu_fixups.rs.
-        // NO_FIXUPS reverts to the crate's own behaviour, for A/B comparison.
-        if cpu.cycles == 0 && std::env::var_os("NO_FIXUPS").is_none() {
-            cpu_fixups::step(cpu);
+        // Counted at the boundary, so the summary reports interrupts the
+        // processor actually took rather than ones merely requested.
+        if cpu.interrupt_pending() {
+            self.irqs += 1;
         }
-        cpu.clock();
+        cpu.tick(&mut self.bus);
         self.machine
             .borrow_mut()
             .sid
@@ -1158,31 +1073,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!(
                 "TRACE playread ${a:04X} n={c} in_block={}",
                 u8::from(inside)
-            );
-        }
-        let mut by_name: BTreeMap<&str, u64> = BTreeMap::new();
-        for (&(_, op), &c) in &t.stubbed {
-            *by_name
-                .entry(stubbed_opcode(op).unwrap_or("?"))
-                .or_insert(0) += c;
-        }
-        let names: Vec<String> = by_name.iter().map(|(n, c)| format!("{n}:{c}")).collect();
-        println!(
-            "TRACE stubbed total={} sites={} ops={}",
-            t.stubbed.values().sum::<u64>(),
-            t.stubbed.len(),
-            if names.is_empty() {
-                "-".to_string()
-            } else {
-                names.join(",")
-            }
-        );
-        let mut sites: Vec<((u16, u8), u64)> = t.stubbed.iter().map(|(k, v)| (*k, *v)).collect();
-        sites.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        for ((pc, op), c) in sites.into_iter().take(8) {
-            println!(
-                "TRACE stubsite ${pc:04X} op=${op:02X} {} n={c}",
-                stubbed_opcode(op).unwrap_or("?")
             );
         }
         for (pc, c) in t.top_v(&t.rom_exec, 5) {

@@ -2,8 +2,9 @@
 name = "rust-sid"
 version = "0.1.0"
 edition = "2024"
+authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "GPL-2.0-only"
 description = "MOS 6581 SID chip emulator"
 
 [dev-dependencies]
-lib6502 = "0.2.2"
+mos6510 = { path = "../mos6510" }

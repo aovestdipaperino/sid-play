@@ -3,23 +3,12 @@
 version = 4
 
 [[package]]
-name = "bitflags"
-version = "2.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-
-[[package]]
-name = "lib6502"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3ca7092d4bc71df3be8f655e379dcc115792a5ff3a51a04686bbcd8f9b721a9"
-dependencies = [
- "bitflags",
-]
+name = "mos6510"
+version = "0.1.0"
 
 [[package]]
 name = "rust-sid"
 version = "0.1.0"
 dependencies = [
- "lib6502",
+ "mos6510",
 ]
