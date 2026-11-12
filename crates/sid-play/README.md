@@ -16,6 +16,18 @@ Licence: MIT OR Apache-2.0.
 cargo run --release -p sid-play --bin render -- tune.sid --seconds 20 --out out.wav
 ```
 
+Playing out loud:
+
+```sh
+cargo run --release -p sid-play --features playback --bin render -- tune.sid --sink audio
+```
+
+`--sink wav` (the default) writes the file named by `--out`; `--sink audio`
+plays through the default output device and ignores `--out`. It needs the
+`playback` feature, the only one, which pulls in `cpal`; without it the default
+build has no dependencies besides `mos6510` and `mos6581`. `--seconds` bounds
+the length either way.
+
 `--subsong N` selects a subsong (0-based). `--trace` prints diagnostics about
 where the tune ran, what it read and which chip registers it wrote. `--ntsc`
 uses the 60 Hz frame clock. `--poweron FILE` starts the tune from a 1024-byte

@@ -19,6 +19,12 @@
 
 - `render --poweron FILE` loads a 1024-byte power-on RAM image from a file
   instead of the built-in one.
+- `playback` feature: `sink::AudioSink` plays through the default output device
+  via `cpal`. Off by default; the default build still depends only on `mos6510`
+  and `mos6581`.
+- `render --sink wav|audio` picks where samples go. `wav` stays the default and
+  is unchanged; `audio` needs the `playback` feature and otherwise exits with an
+  error saying so.
 
 ### Removed
 

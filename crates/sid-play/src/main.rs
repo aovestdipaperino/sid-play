@@ -7,7 +7,10 @@
 //! tunes that do not install one, and a halt loop, all above $ffe0.
 //!
 //! `cargo run --release -p sid-play --bin render -- tune.sid [--subsong N] [--seconds S]
-//!         [--ntsc] [--probe] [--poweron FILE] [--out file.wav]`
+//!         [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio] [--out file.wav]`
+//!
+//! `--sink audio` plays through the default output device and needs a build
+//! with `--features playback`; `--out` applies only to `--sink wav`.
 
 use mos6510::{Bus, Cpu};
 use mos6581::{Model, Sid};
@@ -652,6 +655,49 @@ fn write_machine_state(
     ram[0x00ad] = (load >> 8) as u8;
 }
 
+/// Where the rendered samples go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SinkKind {
+    Wav,
+    Audio,
+}
+
+/// The one sink type the render loop sees, whichever device is behind it.
+type DynSink = Box<dyn Sink<Error = Box<dyn Error>>>;
+
+/// Lets the render loop hold either sink behind one trait object.
+struct BoxErr<S>(S);
+
+impl<S> Sink for BoxErr<S>
+where
+    S: Sink,
+    S::Error: Error + 'static,
+{
+    type Error = Box<dyn Error>;
+
+    fn write(&mut self, samples: &[f32]) -> Result<(), Box<dyn Error>> {
+        self.0.write(samples).map_err(Into::into)
+    }
+
+    fn finish(&mut self) -> Result<(), Box<dyn Error>> {
+        self.0.finish().map_err(Into::into)
+    }
+}
+
+#[cfg(feature = "playback")]
+fn open_audio() -> Result<DynSink, Box<dyn Error>> {
+    Ok(Box::new(BoxErr(sid_play::sink::AudioSink::open(
+        RATE as u32,
+    )?)))
+}
+
+#[cfg(not(feature = "playback"))]
+fn open_audio() -> Result<DynSink, Box<dyn Error>> {
+    Err("this build has no audio output; rebuild with --features playback".into())
+}
+
+const USAGE: &str = "usage: render tune.sid [--subsong N] [--seconds S] [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio] [--out file.wav]";
+
 struct Options {
     tune: Option<PathBuf>,
     /// 0-based, as the register the init routine reads is. Left unset to mean
@@ -659,6 +705,8 @@ struct Options {
     subsong: Option<u8>,
     seconds: f64,
     ntsc: bool,
+    sink: SinkKind,
+    /// Only read by the WAV sink.
     out: PathBuf,
     /// Report the resolved header and stop, without rendering.
     probe: bool,
@@ -674,6 +722,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
         subsong: None,
         seconds: 30.0,
         ntsc: false,
+        sink: SinkKind::Wav,
         out: PathBuf::from("out.wav"),
         probe: false,
         trace: false,
@@ -688,6 +737,13 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
                 o.subsong = Some(v);
             }
             "--seconds" => o.seconds = args.next().ok_or("--seconds needs a value")?.parse()?,
+            "--sink" => {
+                o.sink = match args.next().ok_or("--sink needs a value")?.as_str() {
+                    "wav" => SinkKind::Wav,
+                    "audio" => SinkKind::Audio,
+                    other => return Err(format!("--sink wants wav or audio, got {other}").into()),
+                };
+            }
             "--out" => o.out = PathBuf::from(args.next().ok_or("--out needs a value")?),
             "--ntsc" => o.ntsc = true,
             "--probe" => o.probe = true,
@@ -918,10 +974,7 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<(), Box<dyn Error>> {
     let opts = parse_args()?;
     let Some(path) = opts.tune else {
-        return Err(
-            "usage: render tune.sid [--subsong N] [--seconds S] [--ntsc] [--probe] [--poweron FILE] [--out file.wav]"
-                .into(),
-        );
+        return Err(USAGE.into());
     };
 
     let bytes = std::fs::read(&path)?;
@@ -980,14 +1033,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     harness.set_frame_clock(clock_hz, loaded.cia_clock, pal);
 
     let total = (opts.seconds * RATE) as usize;
-    let mut sink = WavSink::create(
-        &opts.out,
-        WavSpec {
-            sample_rate: RATE as u32,
-            channels: 1,
-            format: SampleFormat::Pcm16,
-        },
-    )?;
+    let mut sink: DynSink = match opts.sink {
+        SinkKind::Wav => Box::new(BoxErr(WavSink::create(
+            &opts.out,
+            WavSpec {
+                sample_rate: RATE as u32,
+                channels: 1,
+                format: SampleFormat::Pcm16,
+            },
+        )?)),
+        SinkKind::Audio => open_audio()?,
+    };
 
     let mut written = 0usize;
     let mut cycles = 0u64;
@@ -1023,10 +1079,17 @@ fn run() -> Result<(), Box<dyn Error>> {
             u16::from_le_bytes([m.sid.read(0), m.sid.read(1)]),
         )
     };
+    let dest = match opts.sink {
+        SinkKind::Wav => format!(
+            "wrote {} ({} bytes, ",
+            opts.out.display(),
+            std::fs::metadata(&opts.out)?.len()
+        ),
+        SinkKind::Audio => "played (".to_owned(),
+    };
     println!(
-        "wrote {} ({} bytes, {} samples, load ${:04X}, init ${:04X}, play ${:04X}, song {}/{}, {} cycles, {} frames driven, {} IRQs taken, {} chip writes, final $d418=${:02X} $d404=${:02X} freq={})",
-        opts.out.display(),
-        std::fs::metadata(&opts.out)?.len(),
+        "{}{} samples, load ${:04X}, init ${:04X}, play ${:04X}, song {}/{}, {} cycles, {} frames driven, {} IRQs taken, {} chip writes, final $d418=${:02X} $d404=${:02X} freq={})",
+        dest,
         written,
         loaded.load,
         loaded.init,

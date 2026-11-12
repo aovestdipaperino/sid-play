@@ -17,6 +17,13 @@ register write to an emulated MOS 6581 SID chip, which renders a WAV file.
 cargo run --release -p sid-play --bin render -- tune.sid --seconds 60 --out tune.wav
 ```
 
+Playing out loud needs the `playback` feature, which adds `cpal` and opens the
+default output device:
+
+```sh
+cargo run --release -p sid-play --features playback --bin render -- tune.sid --sink audio
+```
+
 ## The crates
 
 Two crates in two repositories, both on crates.io:

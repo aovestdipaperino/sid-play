@@ -260,3 +260,44 @@ fn poweron_file_overrides_the_built_in_image() {
         .unwrap();
     assert!(!status.success(), "a 10-byte power-on file was accepted");
 }
+
+/// Without the `playback` feature there is no audio device code at all, and
+/// asking for it must say how to get it rather than quietly writing a WAV.
+#[cfg(not(feature = "playback"))]
+#[test]
+fn audio_sink_without_the_feature_says_how_to_get_it() {
+    let tune = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("scale.sid");
+    let out = Command::new(harness())
+        .arg(&tune)
+        .args(["--seconds", "1", "--sink", "audio"])
+        .output()
+        .expect("the harness binary would not run");
+    assert!(
+        !out.status.success(),
+        "--sink audio succeeded without the feature"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("this build has no audio output; rebuild with --features playback"),
+        "unexpected message: {stderr}"
+    );
+}
+
+#[test]
+fn an_unknown_sink_is_refused() {
+    let tune = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("scale.sid");
+    let out = Command::new(harness())
+        .arg(&tune)
+        .args(["--seconds", "1", "--sink", "speaker"])
+        .output()
+        .expect("the harness binary would not run");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--sink"), "unexpected message: {stderr}");
+}

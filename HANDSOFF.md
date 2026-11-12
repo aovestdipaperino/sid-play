@@ -1,16 +1,25 @@
 # rust-sid - handoff notes
 
-Branch `main`, sid-play 0.2.0. `cargo test` passes: 18 tests (13 unit tests in
-the library, 5 fixture renders). `cargo clippy --all-targets -- -D warnings` and
-`cargo fmt --check` are clean. There is a single build configuration; the
-`gpl-data` feature was removed in 0.2.0.
+Branch `main`, sid-play 0.2.0. `cargo test` passes: 28 tests (21 unit tests in
+the library, 7 fixture tests); `cargo test --features playback` passes 28 (22
+and 6, because the no-audio refusal test only exists without the feature).
+`cargo clippy --all-targets -- -D warnings` is clean with and without
+`--features playback`, and `cargo fmt --check` is clean. There is a single
+licence configuration; the `gpl-data` feature was removed in 0.2.0. The only
+feature is `playback`, which adds live output through `cpal`.
+
+Design phase 4 (the demo) is done: `render --sink wav|audio`, with `AudioSink`
+in `sink.rs` behind `playback`. The render loop is the same for both sinks, and
+`--sink wav` stays the default and renders byte-identical WAVs. The default
+build still has no third-party dependency besides `mos6510` and `mos6581`
+(`cargo tree -e normal | grep -c cpal` prints 0).
 
 > **Update 2026-11-12, repository split:** `mos6581` and `sid-gpl-data` now live in
 > their own repositories ([mos6581](https://github.com/aovestdipaperino/mos6581),
 > [sid-gpl-data](https://github.com/aovestdipaperino/sid-gpl-data)), together with
 > `docs/provenance.md` (in mos6581) and the data generators in `tools/` (in
-> sid-gpl-data). This repository keeps only the player, which takes both from
-> crates.io. Paths below that start with `crates/mos6581` or `crates/sid-gpl-data`
+> sid-gpl-data). This repository keeps only the player, which takes `mos6510`
+> and `mos6581` from crates.io. Paths below that start with `crates/mos6581` or `crates/sid-gpl-data`
 > refer to those repositories' roots.
 
 > **Update 2026-11-12 (gpl-data build, measured before the crate split): the silent-tune problem was the CPU, not the tunes.**
@@ -36,8 +45,8 @@ the library, 5 fixture renders). `cargo clippy --all-targets -- -D warnings` and
 > superseded.
 
 These numbers are for the gpl-data build, which no longer exists (the feature was
-removed in 0.2.0). The current build's table is in the "Default-build fidelity
-gap" section below; its minimum tonality is 0.34 (`Axel_F`).
+removed in 0.2.0). The current build's table is in the "Fidelity gap"
+section below; its minimum tonality is 0.34 (`Axel_F`).
 
 Tonality medians over 10 s renders (gpl-data build, historical). "Old" is lib6502 plus the partial
 instruction-fix layer; "New" is mos6510. Before any CPU fix, 13 of the 16
@@ -81,7 +90,7 @@ crates/mos6581/src/tables/             clean_cutoff.rs and clean_waves.rs (the
 crates/mos6581/tests/        behavioural tests per component
 crates/sid-gpl-data/         GPL-2.0 data, unchanged; nothing depends on it
                              since 0.2.0
-crates/sid-play/src/         sink (WAV) + main.rs: PSID loader, 6510 harness,
+crates/sid-play/src/         sink (WAV, and live audio behind `playback`) + main.rs: PSID loader, 6510 harness,
                              trace diagnostics (binary `render`); poweron.rs
                              and poweron_clean.rs (clean-room power-on image)
 crates/sid-play/tests/       fixture renders (tests/fixtures/*.sid)
@@ -99,8 +108,11 @@ docs/superpowers/plans/      plan 1 (faithful chip)
 
 ```sh
 cargo test --workspace
+cargo test --workspace --features playback
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features playback -- -D warnings
 cargo run --release -p sid-play --bin render -- tune.sid --seconds 20 --out out.wav
+cargo run --release -p sid-play --features playback --bin render -- tune.sid --sink audio   # play out loud
 cargo run --release -p sid-play --bin render -- tune.sid --poweron image.bin --out out.wav   # own 1024-byte power-on image
 python3 -I crates/sid-play/scripts/tonality.py out.wav   # median autocorrelation peak
 cargo run --release -p sid-play --bin render -- tune.sid --seconds 5 --out /tmp/x.wav --trace
@@ -191,7 +203,7 @@ also keeps the historical gpl-data numbers.
 `sid-gpl-data` still exists, unchanged and `GPL-2.0-only`, in its own
 repository. Nothing depends on it any more.
 
-### Default-build fidelity gap
+### Fidelity gap
 
 Current build, sid-play 0.2.0 with mos6581 0.2.0: each tune in `data/*.sid`
 rendered for 10 s with the release `render`, tonality from

@@ -121,6 +121,418 @@ impl Sink for WavSink {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Live output. The pure pieces below (interleaving and the blocking ring) carry
+// no cpal types, so they are tested in every build; only `AudioSink` itself
+// needs the `playback` feature.
+
+/// Write mono samples onto `channels` interleaved device channels, converting
+/// each with `convert`. Frames the mono slice cannot fill, and any stray tail
+/// that is not a whole frame, get `silence`. Returns how many mono samples were
+/// used.
+#[cfg_attr(not(feature = "playback"), allow(dead_code))]
+fn interleave<T: Copy>(
+    mono: &[f32],
+    channels: usize,
+    out: &mut [T],
+    convert: impl Fn(f32) -> T,
+    silence: T,
+) -> usize {
+    let channels = channels.max(1);
+    let mut used = 0;
+    let mut frames = out.chunks_exact_mut(channels);
+    // Mono goes first in the zip: when it runs out, no frame is consumed.
+    for (&s, frame) in mono.iter().zip(&mut frames) {
+        frame.fill(convert(s));
+        used += 1;
+    }
+    for frame in frames {
+        frame.fill(silence);
+    }
+    let whole = out.len() - out.len() % channels;
+    out[whole..].fill(silence);
+    used
+}
+
+/// A bounded queue of mono samples between the render thread and the device
+/// callback. The writer blocks while it is full, so the device sets the pace;
+/// the reader never waits.
+#[cfg_attr(not(feature = "playback"), allow(dead_code))]
+struct Ring {
+    queue: std::sync::Mutex<std::collections::VecDeque<f32>>,
+    changed: std::sync::Condvar,
+    capacity: usize,
+}
+
+#[cfg_attr(not(feature = "playback"), allow(dead_code))]
+impl Ring {
+    /// How long a blocked writer sleeps before it asks again whether to give up.
+    const POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+    fn new(capacity: usize) -> Self {
+        Self {
+            queue: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
+            changed: std::sync::Condvar::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// A panicking holder cannot leave a queue of floats inconsistent, so a
+    /// poisoned lock is simply taken over.
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::VecDeque<f32>> {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Queue every sample, waiting for room as needed. Stops early, returning
+    /// how many went in, if `give_up` says so while the ring is full.
+    fn push_blocking(&self, samples: &[f32], give_up: impl Fn() -> bool) -> usize {
+        let mut pushed = 0;
+        let mut q = self.lock();
+        while pushed < samples.len() {
+            let room = self.capacity - q.len();
+            if room == 0 {
+                if give_up() {
+                    break;
+                }
+                q = self
+                    .changed
+                    .wait_timeout(q, Self::POLL)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+                continue;
+            }
+            let take = room.min(samples.len() - pushed);
+            q.extend(&samples[pushed..pushed + take]);
+            pushed += take;
+        }
+        pushed
+    }
+
+    /// Move as many queued samples as fit into `out`, without waiting for more.
+    fn drain_into(&self, out: &mut [f32]) -> usize {
+        let n = {
+            let mut q = self.lock();
+            let n = out.len().min(q.len());
+            for (slot, s) in out.iter_mut().zip(q.drain(..n)) {
+                *slot = s;
+            }
+            n
+        };
+        if n > 0 {
+            self.changed.notify_all();
+        }
+        n
+    }
+
+    /// Wait until the reader has taken everything. Returns false if `give_up`
+    /// said so first.
+    fn wait_drained(&self, give_up: impl Fn() -> bool) -> bool {
+        let mut q = self.lock();
+        loop {
+            if q.is_empty() {
+                return true;
+            }
+            if give_up() {
+                return false;
+            }
+            q = self
+                .changed
+                .wait_timeout(q, Self::POLL)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
+
+#[cfg(feature = "playback")]
+pub use audio::{AudioError, AudioSink};
+
+#[cfg(feature = "playback")]
+mod audio {
+    use super::{Ring, Sink, interleave};
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+    use std::fmt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// How much audio the ring holds before `write` blocks: long enough to ride
+    /// out a scheduling hiccup, short enough that stopping feels immediate.
+    const BUFFER_SECONDS: f64 = 0.35;
+
+    /// Formats the callback converts to, best first.
+    const FORMATS: [SampleFormat; 8] = [
+        SampleFormat::F32,
+        SampleFormat::I16,
+        SampleFormat::U16,
+        SampleFormat::I32,
+        SampleFormat::F64,
+        SampleFormat::U32,
+        SampleFormat::I8,
+        SampleFormat::U8,
+    ];
+
+    #[derive(Debug)]
+    pub enum AudioError {
+        /// The host reports no default output device.
+        NoDevice,
+        /// The device would not list its output configurations.
+        Configs(cpal::Error),
+        /// No output configuration runs at the requested rate. `available`
+        /// lists the device's rate ranges, inclusive.
+        UnsupportedRate {
+            requested: u32,
+            available: Vec<(u32, u32)>,
+        },
+        BuildStream(cpal::Error),
+        PlayStream(cpal::Error),
+        /// Reported by the device while the stream was running.
+        Stream(cpal::Error),
+    }
+
+    impl fmt::Display for AudioError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::NoDevice => f.write_str("no default audio output device"),
+                Self::Configs(e) => write!(f, "could not list the output device's formats: {e}"),
+                Self::UnsupportedRate {
+                    requested,
+                    available,
+                } => {
+                    write!(
+                        f,
+                        "the output device does not run at {requested} Hz; it offers"
+                    )?;
+                    if available.is_empty() {
+                        return f.write_str(" no output formats at all");
+                    }
+                    for (i, (lo, hi)) in available.iter().enumerate() {
+                        let sep = if i == 0 { " " } else { ", " };
+                        if lo == hi {
+                            write!(f, "{sep}{lo} Hz")?;
+                        } else {
+                            write!(f, "{sep}{lo}-{hi} Hz")?;
+                        }
+                    }
+                    Ok(())
+                }
+                Self::BuildStream(e) => write!(f, "could not open the output stream: {e}"),
+                Self::PlayStream(e) => write!(f, "could not start the output stream: {e}"),
+                Self::Stream(e) => write!(f, "the output stream failed: {e}"),
+            }
+        }
+    }
+
+    impl std::error::Error for AudioError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Configs(e) | Self::BuildStream(e) | Self::PlayStream(e) | Self::Stream(e) => {
+                    Some(e)
+                }
+                Self::NoDevice | Self::UnsupportedRate { .. } => None,
+            }
+        }
+    }
+
+    /// Glitches the stream recovers from on its own; they are not worth
+    /// stopping a tune for.
+    fn is_transient(kind: cpal::ErrorKind) -> bool {
+        matches!(
+            kind,
+            cpal::ErrorKind::Xrun
+                | cpal::ErrorKind::DeviceChanged
+                | cpal::ErrorKind::RealtimeDenied
+        )
+    }
+
+    /// Convert one sample to the device's format, clamped to full scale.
+    pub(super) fn to_device<T: Sample + FromSample<f32>>(s: f32) -> T {
+        T::from_sample(s.clamp(-1.0, 1.0))
+    }
+
+    /// Plays through the default output device. The mono stream is copied onto
+    /// every device channel.
+    pub struct AudioSink {
+        stream: Option<cpal::Stream>,
+        ring: Arc<Ring>,
+        failed: Arc<Mutex<Option<cpal::Error>>>,
+        /// The largest buffer, in frames, the device has asked for so far.
+        period: Arc<AtomicUsize>,
+        sample_rate: u32,
+    }
+
+    impl AudioSink {
+        pub fn open(sample_rate: u32) -> Result<Self, AudioError> {
+            let host = cpal::default_host();
+            let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
+            let ranges: Vec<_> = device
+                .supported_output_configs()
+                .map_err(AudioError::Configs)?
+                .collect();
+
+            let at_rate = ranges.iter().filter(|r| {
+                r.min_sample_rate() <= sample_rate && sample_rate <= r.max_sample_rate()
+            });
+            let chosen = at_rate
+                .clone()
+                .filter_map(|r| {
+                    let rank = FORMATS.iter().position(|f| *f == r.sample_format())?;
+                    // Stereo first, then the fewest channels.
+                    Some(((rank, r.channels() != 2, r.channels()), *r))
+                })
+                .min_by_key(|(key, _)| *key)
+                .map(|(_, r)| r);
+            let Some(range) = chosen else {
+                if at_rate.count() > 0 {
+                    return Err(AudioError::BuildStream(cpal::Error::with_message(
+                        cpal::ErrorKind::UnsupportedConfig,
+                        format!(
+                            "no output format at {sample_rate} Hz that this player converts to"
+                        ),
+                    )));
+                }
+                let mut available: Vec<(u32, u32)> = ranges
+                    .iter()
+                    .map(|r| (r.min_sample_rate(), r.max_sample_rate()))
+                    .collect();
+                available.sort_unstable();
+                available.dedup();
+                return Err(AudioError::UnsupportedRate {
+                    requested: sample_rate,
+                    available,
+                });
+            };
+            let format = range.sample_format();
+            let config = range.with_sample_rate(sample_rate).config();
+
+            let capacity = (f64::from(sample_rate) * BUFFER_SECONDS) as usize;
+            let ring = Arc::new(Ring::new(capacity));
+            let failed = Arc::new(Mutex::new(None));
+            let period = Arc::new(AtomicUsize::new(0));
+
+            let stream = match format {
+                SampleFormat::F32 => build::<f32>(&device, config, &ring, &failed, &period),
+                SampleFormat::I16 => build::<i16>(&device, config, &ring, &failed, &period),
+                SampleFormat::U16 => build::<u16>(&device, config, &ring, &failed, &period),
+                SampleFormat::I32 => build::<i32>(&device, config, &ring, &failed, &period),
+                SampleFormat::F64 => build::<f64>(&device, config, &ring, &failed, &period),
+                SampleFormat::U32 => build::<u32>(&device, config, &ring, &failed, &period),
+                SampleFormat::I8 => build::<i8>(&device, config, &ring, &failed, &period),
+                SampleFormat::U8 => build::<u8>(&device, config, &ring, &failed, &period),
+                // `FORMATS` admits nothing else.
+                other => Err(cpal::Error::with_message(
+                    cpal::ErrorKind::UnsupportedConfig,
+                    format!("unsupported sample format {other}"),
+                )),
+            }
+            .map_err(AudioError::BuildStream)?;
+            stream.play().map_err(AudioError::PlayStream)?;
+
+            Ok(Self {
+                stream: Some(stream),
+                ring,
+                failed,
+                period,
+                sample_rate,
+            })
+        }
+
+        /// Take the error the device reported, if any.
+        fn take_failure(&self) -> Result<(), AudioError> {
+            match self.failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                Some(e) => Err(AudioError::Stream(e)),
+                None => Ok(()),
+            }
+        }
+
+        fn has_failed(failed: &Mutex<Option<cpal::Error>>) -> bool {
+            failed.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        }
+    }
+
+    fn build<T>(
+        device: &cpal::Device,
+        config: cpal::StreamConfig,
+        ring: &Arc<Ring>,
+        failed: &Arc<Mutex<Option<cpal::Error>>>,
+        period: &Arc<AtomicUsize>,
+    ) -> Result<cpal::Stream, cpal::Error>
+    where
+        T: SizedSample + Sample + FromSample<f32>,
+    {
+        let channels = usize::from(config.channels).max(1);
+        let ring = Arc::clone(ring);
+        let period_cb = Arc::clone(period);
+        let failed = Arc::clone(failed);
+        let mut scratch: Vec<f32> = Vec::new();
+        device.build_output_stream(
+            config,
+            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                let frames = data.len() / channels;
+                period_cb.fetch_max(frames, Ordering::Relaxed);
+                if scratch.len() < frames {
+                    scratch.resize(frames, 0.0);
+                }
+                let n = ring.drain_into(&mut scratch[..frames]);
+                interleave(
+                    &scratch[..n],
+                    channels,
+                    data,
+                    to_device::<T>,
+                    T::EQUILIBRIUM,
+                );
+            },
+            move |err: cpal::Error| {
+                if is_transient(err.kind()) {
+                    return;
+                }
+                let mut slot = failed.lock().unwrap_or_else(|e| e.into_inner());
+                // Keep the first failure; later ones are usually its echoes.
+                if slot.is_none() {
+                    *slot = Some(err);
+                }
+            },
+            None,
+        )
+    }
+
+    impl Sink for AudioSink {
+        type Error = AudioError;
+
+        fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+            self.take_failure()?;
+            let failed = Arc::clone(&self.failed);
+            self.ring
+                .push_blocking(samples, || Self::has_failed(&failed));
+            self.take_failure()
+        }
+
+        fn finish(&mut self) -> Result<(), AudioError> {
+            let failed = Arc::clone(&self.failed);
+            if self.ring.wait_drained(|| Self::has_failed(&failed)) {
+                // The last samples left the ring but may still sit in the
+                // device's own buffer; give it one buffer's worth to play out.
+                let frames = self.period.load(Ordering::Relaxed).max(1024);
+                std::thread::sleep(Duration::from_secs_f64(
+                    frames as f64 / f64::from(self.sample_rate),
+                ));
+            }
+            if let Some(stream) = self.stream.take() {
+                // Dropping the stream stops it; pausing first is a courtesy the
+                // drop does not need, so its failure is not an error here.
+                let _ = stream.pause();
+            }
+            self.take_failure()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +709,134 @@ mod tests {
         drop(boxed);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 44 + 4);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn interleave_duplicates_mono_onto_every_channel() {
+        let mut out = [0i32; 6];
+        let used = interleave(&[1.0, 2.0, 3.0], 2, &mut out, |s| s as i32, -1);
+        assert_eq!(used, 3);
+        assert_eq!(out, [1, 1, 2, 2, 3, 3]);
+    }
+
+    #[test]
+    fn interleave_pads_an_underrun_with_silence() {
+        let mut out = [0i32; 9];
+        let used = interleave(&[5.0], 3, &mut out, |s| s as i32, 7);
+        assert_eq!(used, 1, "only one frame was available");
+        assert_eq!(out, [5, 5, 5, 7, 7, 7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn interleave_takes_no_more_frames_than_fit() {
+        let mut out = [0i32; 4];
+        let used = interleave(&[1.0, 2.0, 3.0, 4.0], 2, &mut out, |s| s as i32, 0);
+        assert_eq!(used, 2);
+        assert_eq!(out, [1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn interleave_survives_a_ragged_device_buffer() {
+        // A buffer that is not a whole number of frames must not panic; the
+        // stray tail is filled with silence.
+        let mut out = [9i32; 5];
+        let used = interleave(&[1.0, 2.0, 3.0], 2, &mut out, |s| s as i32, 0);
+        assert_eq!(used, 2);
+        assert_eq!(out, [1, 1, 2, 2, 0]);
+    }
+
+    #[test]
+    fn ring_drains_in_order_and_reports_how_much_it_gave() {
+        let ring = Ring::new(8);
+        ring.push_blocking(&[0.1, 0.2, 0.3], || false);
+        let mut out = [0.0f32; 5];
+        assert_eq!(ring.drain_into(&mut out), 3);
+        assert_eq!(&out[..3], &[0.1, 0.2, 0.3]);
+        assert_eq!(ring.len(), 0);
+        assert_eq!(ring.drain_into(&mut out), 0, "an empty ring gives nothing");
+    }
+
+    #[test]
+    fn ring_blocks_the_writer_while_full() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let ring = Arc::new(Ring::new(4));
+        let done = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let ring = Arc::clone(&ring);
+            let done = Arc::clone(&done);
+            std::thread::spawn(move || {
+                let samples: Vec<f32> = (0..10).map(|i| i as f32).collect();
+                ring.push_blocking(&samples, || false);
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "the writer ran past a full ring"
+        );
+        assert_eq!(ring.len(), 4, "the ring holds more than its capacity");
+
+        let mut got = Vec::new();
+        let mut out = [0.0f32; 3];
+        while got.len() < 10 {
+            let n = ring.drain_into(&mut out);
+            got.extend_from_slice(&out[..n]);
+            std::thread::yield_now();
+        }
+        writer.join().unwrap();
+        assert!(done.load(Ordering::SeqCst));
+        assert_eq!(got, (0..10).map(|i| i as f32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ring_writer_gives_up_when_told_to() {
+        // A dead stream never drains; the writer must not hang on it.
+        let ring = Ring::new(2);
+        let pushed = ring.push_blocking(&[1.0, 2.0, 3.0, 4.0], || true);
+        assert_eq!(pushed, 2, "only what fitted before the abort");
+        assert_eq!(ring.len(), 2);
+    }
+
+    #[test]
+    fn ring_wait_drained_returns_once_empty() {
+        use std::sync::Arc;
+        let ring = Arc::new(Ring::new(4));
+        ring.push_blocking(&[1.0, 2.0], || false);
+        let reader = {
+            let ring = Arc::clone(&ring);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let mut out = [0.0f32; 4];
+                ring.drain_into(&mut out);
+            })
+        };
+        assert!(ring.wait_drained(|| false));
+        assert_eq!(ring.len(), 0);
+        reader.join().unwrap();
+        // Told to give up with samples still queued, it reports that.
+        ring.push_blocking(&[1.0], || false);
+        assert!(!ring.wait_drained(|| true));
+    }
+
+    #[cfg(feature = "playback")]
+    #[test]
+    fn device_conversion_clamps_and_maps_full_scale() {
+        use super::audio::to_device;
+        assert_eq!(to_device::<f32>(0.5), 0.5);
+        assert_eq!(to_device::<f32>(3.0), 1.0);
+        assert_eq!(to_device::<f32>(-3.0), -1.0);
+        assert_eq!(to_device::<i16>(-1.0), i16::MIN);
+        assert_eq!(to_device::<i16>(0.0), 0);
+        assert!(to_device::<i16>(1.0) >= i16::MAX - 1);
+        assert!(
+            to_device::<i16>(9.0) >= i16::MAX - 1,
+            "over full scale must clamp"
+        );
+        assert_eq!(to_device::<u16>(-1.0), 0);
+        assert_eq!(to_device::<u16>(0.0), 32_768, "u16 silence is mid-scale");
+        assert!(to_device::<u16>(1.0) >= u16::MAX - 1);
+        assert_eq!(to_device::<u16>(-9.0), 0, "under full scale must clamp");
     }
 }
