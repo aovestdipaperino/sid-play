@@ -67,6 +67,9 @@ docs/superpowers/plans/      plan 1 (faithful chip)
 
 ## Build and run
 
+`mos6510` is a path dependency: until it is published, check it out as a
+sibling directory (`../mos6510`) before building.
+
 ```sh
 cargo test
 cargo clippy --workspace --all-targets -- -D warnings
@@ -93,7 +96,8 @@ The chip itself. Two fixtures in `tests/fixtures/` exercise it end to end:
 Together these cover oscillator, combination-waveform tables, noise clocking,
 hard sync, ring modulation, envelope, the voice DC model, filter routing and
 resonance, mixer DC, the output-stage high-pass, the sinc resampler, the sink,
-the hand-rolled interrupt entry and the CIA timer.
+the CIA timer, which drives the CPU's IRQ pin (the old hand-rolled interrupt
+entry no longer exists).
 
 *Historical (before the CPU fixes; all 16 corpus PSIDs now play, see the update
 above):* three real tunes render sustained tonal audio: `Action_Biker`, `5_Title_Tunes`,
@@ -223,7 +227,7 @@ Decisions taken on your behalf, with what they cost if wrong:
    verbatim from the plan text.
 4. **Accepted a documented limitation rather than building ROM support.**
    RSID and Kernal-dependent tunes are out of scope. Cost: the demo plays a
-   minority of tunes.
+   minority of tunes. *(Historical: all 16 corpus PSIDs now play.)*
 5. **Kept `GPL-2.0-only`** when MIT was requested, because the vendored reSID
    data cannot be relicensed. The MIT path requires clean-room tables first.
 6. **Declined to build a Kernal stub** after the trace showed one tune in

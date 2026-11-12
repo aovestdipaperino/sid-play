@@ -740,14 +740,23 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
 
     let mut harness = Harness::new(Rc::clone(machine), clock_hz, stubs);
     let mut budget = 20_000_000u64;
-    while !(cpu.at_instruction_boundary() && cpu.pc == stubs.halt) && budget > 0 {
+    // An IRQ through the default halt vector mid-init also lands on the halt
+    // loop, but with S below $FD; only a real return restores it.
+    let returned =
+        |cpu: &Cpu| cpu.at_instruction_boundary() && cpu.pc == stubs.halt && cpu.s == 0xfd;
+    while !returned(&cpu) && !cpu.jammed() && budget > 0 {
         harness.cycle(&mut cpu);
         budget -= 1;
     }
     // Whose handler is installed decides who drives the frame. A tune with no
     // play address at all is driven purely by its own interrupts.
     harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.halt;
-    harness.trace.init_returned = cpu.at_instruction_boundary() && cpu.pc == stubs.halt;
+    let init_returned = returned(&cpu) && !cpu.jammed();
+    if harness.frame_clock {
+        // Clears an interrupt decision latched under the CIA line before the harness took over.
+        cpu.jump(stubs.halt);
+    }
+    harness.trace.init_returned = init_returned;
     harness.trace.phase = Phase::Run;
     harness.machine.borrow_mut().running.set(true);
     (cpu, harness)
