@@ -40,37 +40,45 @@ resolved header and exits.
 The build has no GPL code or data and no optional GPL path. The chip uses
 clean-room models for the filter cutoff, the combined waveforms and the chip
 constants, and the player starts each tune from a clean-room power-on RAM image
-built from documentation. See the "Clean-room defaults" and "Known default-build
-fidelity gaps" sections of [`docs/provenance.md`](https://github.com/aovestdipaperino/mos6581/blob/main/docs/provenance.md).
+built from documentation. See the "Clean-room defaults" and "Known fidelity
+gaps" sections of [`docs/provenance.md`](https://github.com/aovestdipaperino/mos6581/blob/main/docs/provenance.md).
+
+The 0.3.0 sound changes come from mos6581's DC model and output stage, which
+came out of a round against a reference player (VICE `vsid`, ReSID 6581). The
+method, the per-tune distances and the known gaps of that round, including the
+VBL stand-in that leaves tunes using only raster IRQs silent, are in the
+"Fidelity against a reference player" section of
+[`HANDSOFF.md`](https://github.com/aovestdipaperino/sid-play/blob/main/HANDSOFF.md).
 
 ## Tonality on real tunes
 
 `scripts/tonality.py out.wav` (in the workspace checkout only; it is not shipped
 in the published crate) prints the median autocorrelation peak of a render: 0.00
 is silence, higher is more tonal. Over 10 s renders of the 17 tunes in the
-workspace's `data/` directory:
+workspace's `data/` directory (rendered 2026-11-12, sid-play 0.3.0 against
+mos6581 0.3.0):
 
 ```
 tune                                  tonality
-05-09-87                                 0.60
-4_Soccer_Sims_Soccer_Skills              0.66
-5_Title_Tunes                            0.73
-64_Dwarfs_on_XTC                         0.85
-720_Degrees                              0.84
-Acceleration-mix                         0.42
-ACE_II                                   0.70
-Action_Biker                             0.79
-All_Points_Bulletin                      0.77
-All_Terrain_Vehicle_Simulator            0.70
-Alternative_World_Games                  0.70
+05-09-87                                 0.69
+4_Soccer_Sims_Soccer_Skills              0.69
+5_Title_Tunes                            0.74
+64_Dwarfs_on_XTC                         0.86
+720_Degrees                              0.83
+Acceleration-mix                         0.38
+ACE_II                                   0.77
+Action_Biker                             0.77
+All_Points_Bulletin                      0.76
+All_Terrain_Vehicle_Simulator            0.67
+Alternative_World_Games                  0.72
 Antics                                   0.83
-Ark_Pandora                              0.51
-Artura                                   0.81
-Athena                                   0.62
-Axel_F                                   0.34
+Ark_Pandora                              0.47
+Artura                                   0.82
+Athena                                   0.60
+Axel_F                                   0.25
 last_ninja                               0.58
 ```
 
-No tune is silent and none is below 0.20; the lowest are `Axel_F` at 0.34 and
-`Acceleration-mix` at 0.42. Tonality shows that a tune plays, not that it sounds
+No tune is silent and none is below 0.20; the lowest are `Axel_F` at 0.25 and
+`Acceleration-mix` at 0.38. Tonality shows that a tune plays, not that it sounds
 right.

@@ -44,8 +44,8 @@ spec replaces it.
 
 ## Placement
 
-A new crate at `chipsynth64/mos6510/`, a sibling of `rust-sid/`, initialised as
-its own git repository (as `rust-sid` is; the parent `chipsynth64` repository
+A new crate at `<workspace>/mos6510/`, a sibling of `rust-sid/`, initialised as
+its own git repository (as `rust-sid` is; the parent workspace repository
 ignores it the same way, so `/mos6510/` is added to the parent's `.gitignore`).
 `Cargo.toml` uses author Enzo Lombardi `<enzinol@gmail.com>`, repository
 `github.com/aovestdipaperino/mos6510`, edition 2024, licence

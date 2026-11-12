@@ -2,7 +2,7 @@
 
 Date: 2026-11-11
 Status: approved for spec review
-Location: `chipsynth64/rust-sid/`
+Location: `<workspace>/rust-sid/`
 
 ## Summary
 
@@ -11,7 +11,7 @@ module boundaries, using reSID's measured waveform data (vendored, GPL-2.0), ext
 measured-amplitude and filter-nonlinearity layer, a synth layer above the chip, and a demo
 that plays `.sid` files.
 
-It shares no code with `sid6581` (the crate beside it). It is a reimplementation, not a port.
+It shares no code with a separate reverse-engineered crate. It is a reimplementation, not a port.
 
 ## Decisions taken, and why
 
@@ -296,8 +296,8 @@ touching the playback loop.
 - **Envelope curve normalisation.** Normalising a measured curve between its own endpoints
   discards absolute level, which changes loudness between chips. Decide per profile whether
   absolute or normalised is used; default to normalised with a documented flag.
-- **Nested repository.** `rust-sid` is a git repo inside `chipsynth64`, which itself has no
-  commits. `rust-sid` gets its own `git init` and `chipsynth64/.gitignore` gains
+- **Nested repository.** `rust-sid` is a git repo inside the parent workspace, which itself has no
+  commits. `rust-sid` gets its own `git init` and `<workspace>/.gitignore` gains
   `/rust-sid/`.
 - **`cpal` on this machine.** Live output is untested until phase 4; the `--render` path is
   the fallback and is what CI-equivalent checks use.

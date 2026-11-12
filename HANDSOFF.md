@@ -1,8 +1,8 @@
 # rust-sid - handoff notes
 
-Branch `main`, sid-play 0.2.0. `cargo test` passes: 56 tests (25 unit tests in
-the library, 7 fixture tests and 24 in the binary's tests); `cargo test --features playback`
-passes 56 (26, 7 and 23, because the no-audio refusal test only exists without the feature).
+Branch `main`, sid-play 0.3.0 (unreleased). `cargo test` passes: 57 tests (25 unit tests in
+the library, 8 in the binary and 24 fixture tests); `cargo test --features playback`
+passes 57 (26, 8 and 23, because the no-audio refusal fixture test only exists without the feature).
 `cargo clippy --all-targets -- -D warnings` is clean with and without
 `--features playback`, and `cargo fmt --check` is clean. There is a single
 licence configuration; the `gpl-data` feature was removed in 0.2.0. The only
@@ -46,7 +46,7 @@ build still has no third-party dependency besides `mos6510` and `mos6581`
 
 These numbers are for the gpl-data build, which no longer exists (the feature was
 removed in 0.2.0). The current build's table is in the "Fidelity gap"
-section below; its minimum tonality is 0.34 (`Axel_F`).
+section below; its minimum tonality is 0.25 (`Axel_F`).
 
 Tonality medians over 10 s renders (gpl-data build, historical). "Old" is lib6502 plus the partial
 instruction-fix layer; "New" is mos6510. Before any CPU fix, 13 of the 16
@@ -205,36 +205,37 @@ repository. Nothing depends on it any more.
 
 ### Fidelity gap
 
-Current build, sid-play 0.2.0 with mos6581 0.2.0: each tune in `data/*.sid`
+Current build, sid-play 0.3.0 (unreleased) built against mos6581 0.3.0 from
+the local checkout, rendered on 2026-11-12: each tune in `data/*.sid`
 rendered for 10 s with the release `render`, tonality from
 `python3 -I crates/sid-play/scripts/tonality.py` (median autocorrelation peak;
 0.00 is silence).
 
 ```
 tune                                  tonality
-05-09-87                                 0.60
-4_Soccer_Sims_Soccer_Skills              0.66
-5_Title_Tunes                            0.73
-64_Dwarfs_on_XTC                         0.85
-720_Degrees                              0.84
-Acceleration-mix                         0.42
-ACE_II                                   0.70
-Action_Biker                             0.79
-All_Points_Bulletin                      0.77
-All_Terrain_Vehicle_Simulator            0.70
-Alternative_World_Games                  0.70
+05-09-87                                 0.69
+4_Soccer_Sims_Soccer_Skills              0.69
+5_Title_Tunes                            0.74
+64_Dwarfs_on_XTC                         0.86
+720_Degrees                              0.83
+Acceleration-mix                         0.38
+ACE_II                                   0.77
+Action_Biker                             0.77
+All_Points_Bulletin                      0.76
+All_Terrain_Vehicle_Simulator            0.67
+Alternative_World_Games                  0.72
 Antics                                   0.83
-Ark_Pandora                              0.51
-Artura                                   0.81
-Athena                                   0.62
-Axel_F                                   0.34
+Ark_Pandora                              0.47
+Artura                                   0.82
+Athena                                   0.60
+Axel_F                                   0.25
 last_ninja                               0.58
 ```
 
-No tune is silent and none is below 0.20. The lowest are `Axel_F` (0.34) and
-`Acceleration-mix` (0.42). Tonality shows that a tune plays, not that it sounds
+No tune is silent and none is below 0.20. The lowest are `Axel_F` (0.25) and
+`Acceleration-mix` (0.38). Under 0.2.0 the same two were 0.34 and 0.42. Tonality shows that a tune plays, not that it sounds
 right; the list of known differences from the measured chip is in the "Known
-default-build fidelity gaps" section of `docs/provenance.md`.
+fidelity gaps" section of `docs/provenance.md`.
 
 History: before the 2026-11-12 clean-room round, default vs the then-available
 gpl-data build. That build no longer exists; the feature was removed in 0.2.0,
@@ -271,7 +272,8 @@ The lowest were `Axel_F` (0.34, against 0.40 with `gpl-data`) and `Acceleration-
 against 0.60, and the largest rms-diff, 0.2531). Other numbers: the scale fixture
 renders at rms 53 by default and 1362 with `gpl-data` (about 25x quieter), and the combined waveform
 tables differ from the measured ones by rms 84 to 141 (of 255). The full list is
-in the "Known default-build fidelity gaps" section of `docs/provenance.md`.
+in the "Known fidelity gaps" section of `docs/provenance.md` (named "Known
+default-build fidelity gaps" at the time).
 
 ## Fidelity against a reference player (2026-11-12)
 
@@ -303,7 +305,7 @@ Median spectral distance over the 17-tune corpus: 5.9 dB at the start, 4.5 dB af
 Structural harness fixes (commits 468fe9c, 0239d63, de4ac48): CIA-speed songs run on timer A in the KERNAL post-reset state (`Axel_F` had played 9% fast); VBL songs run on the VIC-II frame (19656 cycles PAL, 17095 NTSC); a KERNAL-like IRQ chain; the play address is always driven and the KERNAL timer A runs for every song; header length 0x76 or 0x7C; the CIA CRA force-load strobe.
 
 Known remaining gaps:
-- VBL songs with play=0 get the CIA's 60 Hz instead of a 50 Hz raster IRQ, since there is no VIC-II. A stand-in, with a follow-up due.
+- VBL songs with play=0 are driven only by the KERNAL's CIA 1 timer A interrupt (60 Hz) instead of a 50 Hz raster IRQ, since there is no VIC-II. That covers only tunes that leave the CIA interrupt enabled. A tune that writes $7F to $DC0D and sets up its own raster IRQ through $D01A/$D012 gets no interrupts at all and plays silent. A follow-up is due.
 - The filter top end (12 kHz against 16 to 21 kHz on real chips).
 - The `Alternative_World_Games` intermodulation band is still about 7 dB low.
 - `Acceleration-mix` and `64_Dwarfs` (high-resonance filter tunes) are the furthest from VICE, but VICE is itself biased there.
@@ -368,7 +370,7 @@ That is per-tune reverse engineering, not a systemic defect.
 
 Decisions taken on your behalf, with what they cost if wrong:
 
-1. **Branch instead of worktree.** The repo is nested inside `chipsynth64` and
+1. **Branch instead of worktree.** The repo is nested inside the parent workspace and
    the sandbox only writes under the workspace and temp dirs. Cost: none,
    trivially re-rooted.
 2. **Removed the `level == 0 → output = 0` rule** the plan mandated, in favour

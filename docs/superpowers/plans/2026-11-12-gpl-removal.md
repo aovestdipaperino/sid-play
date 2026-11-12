@@ -16,9 +16,9 @@
 **Tech Stack:** Rust 2024 (rust-version 1.85), cargo, Python 3 (`-I`) for the WAV metrics, POSIX sh.
 
 **Repos:**
-- `M` = `/Users/enzo/Code/chipsynth64/mos6581`
-- `P` = `/Users/enzo/Code/chipsynth64/sid-play`
-- `G` = `/Users/enzo/Code/chipsynth64/sid-gpl-data`
+- `M` = `<workspace>/mos6581`
+- `P` = `<workspace>/sid-play`
+- `G` = `<workspace>/sid-gpl-data`
 - `S` = a private scratch directory outside the repositories, for the private evaluator and the clean-room scratch crates.
 
 ## Global Constraints

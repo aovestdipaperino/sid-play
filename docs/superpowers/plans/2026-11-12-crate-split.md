@@ -12,7 +12,7 @@ Spec: `docs/superpowers/specs/2026-11-12-crate-split-design.md`.
 
 ## Global Constraints
 
-- Repository: `/Users/enzo/Code/chipsynth64/rust-sid`, branch `feat/faithful-chip`. Workspace members live under `crates/`.
+- Repository: `<workspace>/rust-sid`, branch `feat/faithful-chip`. Workspace members live under `crates/`.
 - Crate names exactly: `mos6581`, `sid-play`, `sid-gpl-data`. Feature name exactly: `gpl-data`, **off by default**, in both `mos6581` and `sid-play`; `sid-play`'s `gpl-data = ["mos6581/gpl-data", "dep:sid-gpl-data"]`.
 - `sid-gpl-data` holds borrowed data only: `pub const` items and plain data structs, no functions, no dependencies. Every item keeps its attribution comment.
 - No relicensing (Task 5) until the Task 1 provenance audit is complete and every finding resolved.
@@ -59,12 +59,12 @@ HANDSOFF.md
 - [ ] **Step 1: Record baseline renders at the current tree**
 
 ```bash
-cd /Users/enzo/Code/chipsynth64/rust-sid
+cd <workspace>/rust-sid
 cargo build --release --examples
 mkdir -p target/split-baseline
 ./target/release/examples/render tests/fixtures/scale.sid --seconds 5 --out target/split-baseline/scale.wav
 ./target/release/examples/render tests/fixtures/irq.sid --seconds 5 --out target/split-baseline/irq.wav
-./target/release/examples/render /Users/enzo/Code/chipsynth64/last_ninja.sid --seconds 5 --out target/split-baseline/last_ninja.wav
+./target/release/examples/render <workspace>/last_ninja.sid --seconds 5 --out target/split-baseline/last_ninja.wav
 (cd target/split-baseline && shasum -a 256 *.wav > SHA256SUMS && cat SHA256SUMS)
 ```
 Expected: three WAVs and three hashes.
@@ -121,7 +121,7 @@ git commit -m "docs: provenance audit of rust-sid's data and constants"
 - [ ] **Step 1: Move files with git**
 
 ```bash
-cd /Users/enzo/Code/chipsynth64/rust-sid
+cd <workspace>/rust-sid
 mkdir -p crates/mos6581/tests crates/sid-play/src crates/sid-play/tests
 git mv src crates/mos6581/src
 git mv crates/mos6581/src/sink.rs crates/sid-play/src/sink.rs
@@ -235,7 +235,7 @@ cargo fmt --check
 mkdir -p target/split-check
 ./target/release/render crates/sid-play/tests/fixtures/scale.sid --seconds 5 --out target/split-check/scale.wav
 ./target/release/render crates/sid-play/tests/fixtures/irq.sid --seconds 5 --out target/split-check/irq.wav
-./target/release/render /Users/enzo/Code/chipsynth64/last_ninja.sid --seconds 5 --out target/split-check/last_ninja.wav
+./target/release/render <workspace>/last_ninja.sid --seconds 5 --out target/split-check/last_ninja.wav
 (cd target/split-check && shasum -a 256 -c ../split-baseline/SHA256SUMS)
 ```
 Expected: tests pass (the same 91, now spread over two crates); `scale.wav: OK`, `irq.wav: OK`, `last_ninja.wav: OK`. If `shasum -c` fails, the move changed behaviour: find out why before committing.
@@ -792,10 +792,10 @@ If a test outside the ones named above fails only in the default build, decide w
 cargo build --release -p sid-play --features gpl-data
 ./target/release/render crates/sid-play/tests/fixtures/scale.sid --seconds 5 --out target/split-check/scale.wav
 ./target/release/render crates/sid-play/tests/fixtures/irq.sid --seconds 5 --out target/split-check/irq.wav
-./target/release/render /Users/enzo/Code/chipsynth64/last_ninja.sid --seconds 5 --out target/split-check/last_ninja.wav
+./target/release/render <workspace>/last_ninja.sid --seconds 5 --out target/split-check/last_ninja.wav
 (cd target/split-check && shasum -a 256 -c ../split-baseline/SHA256SUMS)
 cargo build --release -p sid-play
-./target/release/render /Users/enzo/Code/chipsynth64/last_ninja.sid --seconds 5 --out target/split-check/last_ninja-default.wav
+./target/release/render <workspace>/last_ninja.sid --seconds 5 --out target/split-check/last_ninja-default.wav
 ```
 Expected: three `OK`; the default render completes with a non-zero chip-write count.
 
@@ -818,7 +818,7 @@ Precondition: `docs/provenance.md` has no unresolved **Borrowed** row outside `s
 
 - [ ] **Step 1: Licences**
 
-In both `crates/mos6581/Cargo.toml` and `crates/sid-play/Cargo.toml` set `license = "MIT OR Apache-2.0"`. Copy `LICENSE-MIT` and `LICENSE-APACHE` from `/Users/enzo/Code/chipsynth64/mos6510/` into both crate directories. Delete the root-level GPL `LICENSE` file if one exists (the GPL text now lives in `crates/sid-gpl-data/LICENSE`).
+In both `crates/mos6581/Cargo.toml` and `crates/sid-play/Cargo.toml` set `license = "MIT OR Apache-2.0"`. Copy `LICENSE-MIT` and `LICENSE-APACHE` from `<workspace>/mos6510/` into both crate directories. Delete the root-level GPL `LICENSE` file if one exists (the GPL text now lives in `crates/sid-gpl-data/LICENSE`).
 
 - [ ] **Step 2: Tonality metric and gap script**
 

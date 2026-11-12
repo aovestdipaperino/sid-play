@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-11-13
+
+Builds on mos6581 0.3. The sound changes in this release come from that
+crate's clean-room DC model and output stage; this crate's own changes are the
+harness fixes below.
+
+### Fixed (PSID loader)
+
+- Songs past 32 take their CIA/VBL speed from bit 31 of the speed field, as the
+  PSID format says. Before, `--subsong 32` and above overflowed the shift (a
+  panic in debug builds).
 
 ### Fixed (harness timing and interrupt model)
 
@@ -11,7 +21,7 @@
 - Header length is 0x76 for v1 and 0x7C for v2 and later.
 - The CIA CRA force-load strobe is honoured.
 
-Effect: tempo and timing now follow the hardware. The median spectral distance to the reference player fell from 5.9 dB to 4.5 dB on these fixes alone (see `HANDSOFF.md`). Known stand-in: VBL songs with play=0 get the CIA's 60 Hz rather than a 50 Hz raster IRQ, since there is no VIC-II.
+Effect: tempo and timing now follow the hardware. The median spectral distance to the reference player fell from 5.9 dB to 4.5 dB on these fixes alone (see `HANDSOFF.md`). Known stand-in: VBL songs with play=0 are driven only by the KERNAL's CIA 1 timer A interrupt (60 Hz) rather than a 50 Hz raster IRQ, since there is no VIC-II. That works only for tunes that leave the CIA interrupt enabled; a tune that writes $7F to $DC0D and uses raster IRQs ($D01A/$D012) gets no interrupts and plays silent.
 
 ## 0.2.0 (2026-11-12)
 

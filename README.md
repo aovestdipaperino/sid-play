@@ -65,7 +65,7 @@ GPL-2.0-only, but nothing here uses it.
 ## What the clean-room build gives up
 
 Measured, not guessed. Every one of the 16 HVSC tunes and Last Ninja plays, with
-tonality medians from 0.34 to 0.85 over 10 s renders (the per-tune numbers are
+tonality medians from 0.25 to 0.86 over 10 s renders (the per-tune numbers are
 in [`HANDSOFF.md`](HANDSOFF.md)). The differences from real silicon that matter:
 
 - The filter cutoff curve closes at about the right frequency, but its mid-range
@@ -80,8 +80,16 @@ in [`HANDSOFF.md`](HANDSOFF.md)). The differences from real silicon that matter:
   captured bytes. `render --poweron FILE` loads a 1024-byte image of your own
   instead.
 
-The full list is in the "Known default-build fidelity gaps" section of
+The full list is in the "Known fidelity gaps" section of
 [`docs/provenance.md`](https://github.com/aovestdipaperino/mos6581/blob/main/docs/provenance.md).
+
+## Fidelity
+
+sid-play 0.3.0 builds on mos6581 0.3, whose DC model and output stage came out
+of a round against a reference player (VICE `vsid`, ReSID 6581); the median
+spectral distance over the 17 tunes fell from 5.9 dB to 4.1 dB. The method,
+the per-tune numbers and the remaining gaps are in the "Fidelity against a
+reference player" section of [`HANDSOFF.md`](HANDSOFF.md).
 
 ## Testing
 

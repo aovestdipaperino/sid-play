@@ -400,6 +400,14 @@ fn parse(bytes: &[u8]) -> Result<Psid, PsidError> {
     })
 }
 
+/// The bit of the header's speed field that belongs to a 1-based song.
+///
+/// The PSID format gives songs 1 to 32 one bit each, from bit 0 up; every song
+/// past 32 shares bit 31.
+fn speed_bit(song: u16) -> u32 {
+    1 << (song.clamp(1, 32) - 1)
+}
+
 /// Turn a header and a file into a block with a resolved load address.
 ///
 /// A load address of zero is the normal case rather than an edge case: the block
@@ -480,7 +488,7 @@ fn resolve(psid: &Psid, bytes: &[u8], wanted: Option<u8>) -> Result<Loaded, Psid
         play,
         song: song as u8,
         songs,
-        cia_clock: psid.speed & (1 << (song - 1)) != 0,
+        cia_clock: psid.speed & speed_bit(song) != 0,
         clock_hint: (psid.flags >> 2) & 3,
         chip_hint: (psid.flags >> 4) & 3,
         data: block.to_vec(),
@@ -1600,6 +1608,39 @@ mod tests {
             );
             assert_eq!(cia.latch, KERNAL_TIMER_A_PAL, "cia_clock={cia_clock}");
             assert_eq!(cia.mask & 0x01, 0x01, "cia_clock={cia_clock}: IRQ off");
+        }
+    }
+
+    /// Songs past 32 take their speed from bit 31, as the PSID format says,
+    /// instead of shifting past the end of the field.
+    #[test]
+    fn songs_past_32_use_speed_bit_31() {
+        assert_eq!(speed_bit(1), 1);
+        assert_eq!(speed_bit(32), 1 << 31);
+        assert_eq!(speed_bit(33), 1 << 31);
+        assert_eq!(speed_bit(255), 1 << 31);
+
+        let bytes = [0x00, 0x10, 0x60]; // load prefix $1000, then RTS
+        let psid = |speed: u32| Psid {
+            version: 2,
+            data_off: 0,
+            load: 0,
+            init: 0,
+            play: 0x1000,
+            songs: 64,
+            start_song: 1,
+            speed,
+            flags: 0,
+        };
+        for (wanted, speed, cia) in [
+            (31u8, 1u32 << 31, true),   // song 32
+            (32, 1 << 31, true),        // song 33
+            (63, 1 << 31, true),        // song 64
+            (40, !(1u32 << 31), false), // song 41: every other bit set
+            (30, 1 << 31, false),       // song 31 has its own bit
+        ] {
+            let loaded = resolve(&psid(speed), &bytes, Some(wanted)).unwrap();
+            assert_eq!(loaded.cia_clock, cia, "song {}", loaded.song);
         }
     }
 
