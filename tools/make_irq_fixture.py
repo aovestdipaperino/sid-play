@@ -52,13 +52,13 @@ for a, b in code.items():
 hdr = bytearray(128)
 hdr[0:4] = b"PSID"
 hdr[4:6] = (2).to_bytes(2, "big")      # version
-hdr[6:8] = (124).to_bytes(2, "big")    # data offset, from the start of the C64 header
-hdr[8:10] = (len(block)).to_bytes(2, "big")
+hdr[6:8] = (128).to_bytes(2, "big")    # data offset, an absolute file position
+hdr[8:10] = (ORG).to_bytes(2, "big")       # load address
 hdr[10:12] = (0x2000).to_bytes(2, "big")   # init
 hdr[12:14] = (0x2100).to_bytes(2, "big")   # play
-hdr[14:16] = (ORG).to_bytes(2, "big")      # load
+hdr[14:16] = (1).to_bytes(2, "big")         # song count
 hdr[16] = 1; hdr[17] = 0
 hdr[32:64] = b"IRQ-DRIVEN TEST FIXTURE".ljust(32, b"\0")
-assert 4 + 124 == 128, "data must start at the end of the header"
+assert len(hdr) == 128, "data must start at the end of the header"
 open("tests/fixtures/irq.sid", "wb").write(bytes(hdr) + bytes(block))
 print("wrote tests/fixtures/irq.sid", 128 + len(block), "bytes")

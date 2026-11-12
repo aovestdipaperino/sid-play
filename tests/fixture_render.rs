@@ -168,3 +168,66 @@ fn an_irq_driven_tune_keeps_taking_interrupts() {
     );
     assert!(silent < 0.05, "the tail is mostly silence: {silent:.2}");
 }
+
+/// The container header was read against the wrong field layout for a long time:
+/// the data offset was treated as relative to the end of the magic, the load
+/// address was read as a block length, and the song count was read as the load
+/// address. Each of those mistakes cancelled another, so the fixtures still
+/// played. This pins the layout itself, so a future change cannot quietly
+/// reintroduce a pair of cancelling errors.
+#[test]
+fn the_loader_resolves_the_container_header() {
+    for (fixture, expect) in [
+        (
+            "scale.sid",
+            "load $2000 init $2000 play $202A (called), 82 bytes at file 128",
+        ),
+        (
+            "irq.sid",
+            "load $2000 init $2000 play $2100 (called), 512 bytes at file 128",
+        ),
+    ] {
+        let tune = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(fixture);
+        let out = Command::new(harness())
+            .args(["--probe"])
+            .arg(&tune)
+            .output()
+            .expect("the harness ran");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains(expect),
+            "{fixture} resolved to {text:?}, expected it to contain {expect:?}"
+        );
+    }
+}
+
+/// A load address that would place the tune over the zero page and stack is a
+/// corrupt file, not something to guess around.
+#[test]
+fn the_loader_refuses_a_block_that_cannot_be_placed() {
+    let dir = std::env::temp_dir().join("rust-sid-badload.sid");
+    let mut bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("scale.sid"),
+    )
+    .unwrap();
+    bytes[8..10].copy_from_slice(&0x0052u16.to_be_bytes());
+    std::fs::write(&dir, &bytes).unwrap();
+
+    let out = Command::new(harness())
+        .args(["--probe"])
+        .arg(&dir)
+        .output()
+        .expect("the harness ran");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("zero page"),
+        "a load at $0052 was not refused: {err:?}"
+    );
+    std::fs::remove_file(&dir).ok();
+}
