@@ -1,5 +1,8 @@
 //! Cutoff register -> centre frequency, from measured points, interpolated to
 //! 2048 entries.
+//!
+//! Filter cutoff measurement points: reSID (Dag Lem), GPL-2.0. The point
+//! tables below match reSID's `f0_points_6581` and `f0_points_8580`.
 
 pub struct CutoffTable {
     pub f0: [f64; 2048],
