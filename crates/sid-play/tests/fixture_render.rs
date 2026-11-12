@@ -7,17 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // The fixtures play through a low-pass with the cutoff register at zero, so how
-// loud they are depends on how low the closed corner sits. The built-in curve
-// closes lower than the measured one, so its floor is lower; both must be audible.
-// The default-build floors are about half the observed values (noted beside
-// them); the gpl-data floors sit well below what that build renders.
-#[cfg(feature = "gpl-data")]
-const MIN_RMS: f64 = 500.0;
-#[cfg(not(feature = "gpl-data"))]
+// loud they are depends on how low the closed corner sits. The floors are about
+// half the observed values (noted beside them).
 const MIN_RMS: f64 = 830.0; // observed 1668
-#[cfg(feature = "gpl-data")]
-const MIN_TAIL_RMS: f64 = 300.0;
-#[cfg(not(feature = "gpl-data"))]
 const MIN_TAIL_RMS: f64 = 640.0; // observed 1278
 
 fn harness() -> PathBuf {

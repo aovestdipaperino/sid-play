@@ -1,6 +1,6 @@
 [package]
 name = "sid-play"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
@@ -10,18 +10,12 @@ description = "Play C64 PSID tunes through the mos6581 SID emulator"
 readme = "README.md"
 keywords = ["sid", "psid", "c64", "player", "chiptune"]
 categories = ["emulators", "multimedia::audio"]
-# The scripts only work inside the workspace (they build both configs from its root).
+# The scripts are workspace tools (tonality measurement), not part of the crate.
 exclude = ["scripts/"]
 
 [dependencies]
 mos6510 = "0.1"
-mos6581 = "0.1"
-sid-gpl-data = { version = "0.1", optional = true }
-
-[features]
-default = []
-# Measured tables and the libsidplayfp power-on pattern. Makes the build GPL-2.0.
-gpl-data = ["mos6581/gpl-data", "dep:sid-gpl-data"]
+mos6581 = "0.2"
 
 [[bin]]
 name = "render"
