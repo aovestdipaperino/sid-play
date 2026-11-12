@@ -84,6 +84,35 @@ const VEC_ROM: (u16, u16) = (0xfffa, 0xffff);
 /// tables. Counts for sites already recorded keep accumulating.
 const TRACE_LIMIT: usize = 400;
 
+/// The mnemonic of an undocumented opcode that `lib6502` 0.2.2 executes as an
+/// empty stub: it consumes the operand and cycles but changes no register,
+/// flag or memory. The undocumented NOPs and `$EB` (SBC) are implemented
+/// correctly upstream and are not listed.
+fn stubbed_opcode(op: u8) -> Option<&'static str> {
+    Some(match op {
+        0x03 | 0x07 | 0x0F | 0x13 | 0x17 | 0x1B | 0x1F => "SLO",
+        0x23 | 0x27 | 0x2F | 0x33 | 0x37 | 0x3B | 0x3F => "RLA",
+        0x43 | 0x47 | 0x4F | 0x53 | 0x57 | 0x5B | 0x5F => "SRE",
+        0x63 | 0x67 | 0x6F | 0x73 | 0x77 | 0x7B | 0x7F => "RRA",
+        0x83 | 0x87 | 0x8F | 0x97 => "SAX",
+        0xA3 | 0xA7 | 0xAB | 0xAF | 0xB3 | 0xB7 | 0xBF => "LAX",
+        0xC3 | 0xC7 | 0xCF | 0xD3 | 0xD7 | 0xDB | 0xDF => "DCP",
+        0xE3 | 0xE7 | 0xEF | 0xF3 | 0xF7 | 0xFB | 0xFF => "ISC",
+        0x0B | 0x2B => "ANC",
+        0x4B => "ALR",
+        0x6B => "ARR",
+        0x8B => "XAA",
+        0xCB => "AXS",
+        0x93 | 0x9F => "AHX",
+        0x9B => "TAS",
+        0x9C => "SHY",
+        0x9E => "SHX",
+        0xBB => "LAS",
+        0x02 | 0x12 | 0x22 | 0x32 | 0x42 | 0x52 | 0x62 | 0x72 | 0x92 | 0xB2 | 0xD2 | 0xF2 => "KIL",
+        _ => return None,
+    })
+}
+
 fn in_range(addr: u16, range: (u16, u16)) -> bool {
     addr >= range.0 && addr <= range.1
 }
@@ -119,6 +148,9 @@ struct Trace {
     run_pc: BTreeMap<u16, u64>,
     init_cycles: u64,
     init_returned: bool,
+    /// Undocumented opcodes the CPU fetched that `lib6502` stubs out, keyed by
+    /// (site, opcode). Any count here means the tune ran code we execute wrong.
+    stubbed: BTreeMap<(u16, u8), u64>,
 }
 
 impl Trace {
@@ -133,12 +165,21 @@ impl Trace {
             run_pc: BTreeMap::new(),
             init_cycles: 0,
             init_returned: false,
+            stubbed: BTreeMap::new(),
         }
     }
 
-    fn note(&mut self, pc: u16, ram: &[u8; 0x1_0000]) {
+    /// `fetch` is true when the processor will fetch a new opcode at `pc` on
+    /// this cycle.
+    fn note(&mut self, pc: u16, fetch: bool, ram: &[u8; 0x1_0000]) {
         if !self.enabled {
             return;
+        }
+        if fetch {
+            let op = ram[usize::from(pc)];
+            if stubbed_opcode(op).is_some() {
+                *self.stubbed.entry((pc, op)).or_insert(0) += 1;
+            }
         }
         if self.phase == Phase::Init {
             self.init_cycles += 1;
@@ -850,7 +891,7 @@ impl Harness {
         if self.trace.enabled {
             let pc = cpu.pc;
             let m = self.machine.borrow();
-            self.trace.note(pc, &m.ram);
+            self.trace.note(pc, cpu.cycles == 0, &m.ram);
         }
         let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
@@ -1110,6 +1151,31 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!(
                 "TRACE playread ${a:04X} n={c} in_block={}",
                 u8::from(inside)
+            );
+        }
+        let mut by_name: BTreeMap<&str, u64> = BTreeMap::new();
+        for (&(_, op), &c) in &t.stubbed {
+            *by_name
+                .entry(stubbed_opcode(op).unwrap_or("?"))
+                .or_insert(0) += c;
+        }
+        let names: Vec<String> = by_name.iter().map(|(n, c)| format!("{n}:{c}")).collect();
+        println!(
+            "TRACE stubbed total={} sites={} ops={}",
+            t.stubbed.values().sum::<u64>(),
+            t.stubbed.len(),
+            if names.is_empty() {
+                "-".to_string()
+            } else {
+                names.join(",")
+            }
+        );
+        let mut sites: Vec<((u16, u8), u64)> = t.stubbed.iter().map(|(k, v)| (*k, *v)).collect();
+        sites.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for ((pc, op), c) in sites.into_iter().take(8) {
+            println!(
+                "TRACE stubsite ${pc:04X} op=${op:02X} {} n={c}",
+                stubbed_opcode(op).unwrap_or("?")
             );
         }
         for (pc, c) in t.top_v(&t.rom_exec, 5) {

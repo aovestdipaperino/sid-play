@@ -109,6 +109,7 @@ these are eliminated:
 | Tunes read the raster counter `$D012` | **0** reads across all 16 |
 | `init` does not finish | Returns successfully for **16/16** |
 | Note data reads as untouched RAM | Failing tune reads its **own in-block tables** (`$5396-$539E`) |
+| Tunes execute undocumented opcodes, which `lib6502` 0.2.2 stubs as no-ops | **0** executions across all 16 (`TRACE stubbed`; positive control with `LDA #` flagged caught 1584) |
 
 Two traps worth recording, because they nearly produced false conclusions:
 
