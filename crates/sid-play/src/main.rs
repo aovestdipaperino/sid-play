@@ -33,6 +33,8 @@ struct Stubs {
     init: u16,
     play: u16,
     halt: u16,
+    /// The default interrupt handler: acknowledge CIA 1 and return.
+    irq: u16,
 }
 
 const STUB_SPAN: usize = 0x20;
@@ -52,6 +54,7 @@ fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
                 init: page,
                 play: page + 8,
                 halt: page + 16,
+                irq: page + 24,
             });
         }
         page += 0x100;
@@ -81,6 +84,36 @@ const VEC_ROM: (u16, u16) = (0xfffa, 0xffff);
 /// How many distinct sites `--trace` remembers before it stops widening its
 /// tables. Counts for sites already recorded keep accumulating.
 const TRACE_LIMIT: usize = 400;
+
+/// CIA 1 timer A latch the KERNAL programs for a 1/60 s interrupt, by video
+/// standard. Source: the KERNAL ROM's ENABLE TIMER routine at $FDDD, which
+/// reads the PAL/NTSC flag in $02A6 and stores `#$25,#$40` (PAL) or
+/// `#$95,#$42` (NTSC) to $DC04/$DC05, then jumps to $FF6E, which writes `#$81`
+/// to $DC0D (enable the timer A interrupt) and `(CRA & $80) | $11` to $DC0E
+/// (force-load and start, continuous mode). Commented listing at
+/// <https://www.pagetable.com/c64ref/c64disasm/> (entries $FDDD-$FDF6 and
+/// $FF6E-$FF7A). The $02A6 entry of <https://www.pagetable.com/c64ref/c64mem/>
+/// describes the same thing: the flag "is used by the routines which set the
+/// prescaler values for the system IRQ timer, so that the IRQ occurs every 1/60
+/// second". The PSID format (HVSC `SID_file_format.txt`, "The SID file
+/// environment") gives the same two values for a CIA-speed song: "CIA 1 timer
+/// A: set to 60Hz (0x4025 for PAL and 0x4295 for NTSC) with the counter
+/// running. IRQs active when speed flag is 1".
+const KERNAL_TIMER_A_PAL: u16 = 0x4025;
+const KERNAL_TIMER_A_NTSC: u16 = 0x4295;
+
+/// One VIC-II raster frame, in Φ2 cycles: lines per frame times cycles per
+/// line. Source: Christian Bauer, "The MOS 6567/6569 video controller (VIC-II)
+/// and its application in the Commodore 64", section 3.4, table of display
+/// dimensions: 6569 (PAL-B) 312 lines of 63 cycles; 6567R8 (NTSC-M) 263 lines
+/// of 65 cycles; 6567R56A (NTSC-M) 262 lines of 64 cycles. The R8 is chosen
+/// for NTSC: the article calls the differences between steppings "mostly
+/// negligible with the exception of the 6567R56A", so the R8 is the general
+/// 6567 case, and the R56A would need its own option.
+/// The PSID format uses the same two products, `312 * 63` and `263 * 65`, in
+/// its CIA values for playing a tune on the other video standard.
+const PAL_FRAME_CYCLES: u64 = 312 * 63;
+const NTSC_FRAME_CYCLES: u64 = 263 * 65;
 
 fn in_range(addr: u16, range: (u16, u16)) -> bool {
     addr >= range.0 && addr <= range.1
@@ -410,8 +443,8 @@ struct Cia {
     flags: u8,
     /// Which flags are allowed to pull the interrupt line.
     mask: u8,
-    /// True once a tune has started the timer, so a tune that never touches the
-    /// CIA can be played at a fixed frame rate instead.
+    /// True once a tune has started the timer through $DC0E. Only a VBL-speed
+    /// song consults it; a CIA-speed song is always played on timer A.
     started: bool,
 }
 
@@ -425,18 +458,48 @@ impl Cia {
         self.flags & self.mask != 0
     }
 
-    /// Advance timer A by one cycle. Returns true on the cycle the line rises.
+    /// Timer A as the KERNAL leaves it after reset, which is where the PSID
+    /// format says a CIA-speed song finds it before init: the 1/60 s latch for
+    /// the video standard, the counter loaded from it, running in continuous
+    /// mode, and the timer A interrupt enabled. See [`KERNAL_TIMER_A_PAL`].
+    ///
+    /// The KERNAL writes `$11` to the control register; bit 4 there is the
+    /// force-load strobe, which is acted on here by loading the counter, so
+    /// only the start bit is kept. Bit 3 clear is continuous mode, and this
+    /// model has no one-shot mode to select.
+    fn kernal_timer_a(&mut self, pal: bool) {
+        self.latch = if pal {
+            KERNAL_TIMER_A_PAL
+        } else {
+            KERNAL_TIMER_A_NTSC
+        };
+        self.counter = self.latch;
+        self.control = 0x01;
+        self.mask |= 0x01;
+    }
+
+    /// Advance timer A by one cycle. Returns true on the cycle it underflows,
+    /// whether or not the interrupt is enabled or a previous one acknowledged.
+    ///
+    /// The underflow period is latch+1 cycles: the cycle that underflows also
+    /// reloads the counter with the latch, and the counter then needs `latch`
+    /// further cycles to reach zero and one more to underflow again. The PSID
+    /// format's own CIA values assume the same, subtracting 1 from a period to
+    /// get a latch (`312 * 63 * 50 / 60 - 1`). The `cia_timer_a_period_is_latch_plus_one`
+    /// test pins it. A latch written while the timer runs is picked up by that
+    /// reload, not before.
     fn tick(&mut self) -> bool {
-        let before = self.line();
-        if self.timer_a_running() {
-            if self.counter == 0 {
-                self.flags |= 0x01;
-                self.counter = self.latch;
-            } else {
-                self.counter -= 1;
-            }
+        if !self.timer_a_running() {
+            return false;
         }
-        self.line() && !before
+        if self.counter == 0 {
+            self.flags |= 0x01;
+            self.counter = self.latch;
+            true
+        } else {
+            self.counter -= 1;
+            false
+        }
     }
 
     /// Reading the interrupt register reports the flags and clears them, which
@@ -632,6 +695,18 @@ fn write_halt_loop(ram: &mut [u8; 0x1_0000], halt: u16) {
     ram[s + 2] = (halt >> 8) as u8;
 }
 
+/// `PHA / LDA $DC0D / PLA / RTI`: the default interrupt handler. It does what
+/// the KERNAL's handler does about the interrupt itself, which is to read
+/// $DC0D to release the CIA's line (`KPREND LDA D1ICR`, $EA7E in the listing at
+/// <https://www.pagetable.com/c64ref/c64disasm/>), and returns to whatever was
+/// interrupted. A CIA-speed song's timer runs from before init, so an init that
+/// enables interrupts and stays busy past an underflow lands here and carries
+/// on, rather than being stranded on the halt loop with its init unfinished.
+fn write_irq_stub(ram: &mut [u8; 0x1_0000], irq: u16) {
+    let s = usize::from(irq);
+    ram[s..s + 6].copy_from_slice(&[0x48, 0xad, 0x0d, 0xdc, 0x68, 0x40]);
+}
+
 /// Lay down the machine state a tune expects to find, before its init runs.
 fn write_machine_state(
     ram: &mut [u8; 0x1_0000],
@@ -785,11 +860,18 @@ fn setup(
             write_play_stub(&mut m.ram, stubs, loaded.play);
         }
         write_halt_loop(&mut m.ram, stubs.halt);
-        // Point the interrupt vector at the halt loop, so a tune that never
-        // installs a handler leaves it there and the harness can tell. A tune
-        // that does install one overwrites this and owns its own timing.
-        m.ram[usize::from(IRQ_VECTOR)] = (stubs.halt & 0xff) as u8;
-        m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.halt >> 8) as u8;
+        // A CIA-speed song is played on CIA 1 timer A, and it finds the timer
+        // already running at the KERNAL's rate before its init is called. A
+        // tune that only rewrites the latch to set its tempo relies on this.
+        if loaded.cia_clock {
+            m.cia.borrow_mut().kernal_timer_a(pal);
+        }
+        // Point the interrupt vector at the harness's own handler, so a tune
+        // that never installs one leaves it there and the harness can tell. A
+        // tune that does install one overwrites this and owns its own timing.
+        write_irq_stub(&mut m.ram, stubs.irq);
+        m.ram[usize::from(IRQ_VECTOR)] = (stubs.irq & 0xff) as u8;
+        m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.irq >> 8) as u8;
         m.ram[usize::from(RESET_VECTOR)] = (stubs.halt & 0xff) as u8;
         m.ram[usize::from(RESET_VECTOR + 1)] = (stubs.halt >> 8) as u8;
     }
@@ -797,7 +879,13 @@ fn setup(
 }
 
 /// Start a processor on a prepared machine and run its init to completion.
-fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) -> (Cpu, Harness) {
+fn start(
+    machine: &Rc<RefCell<Machine>>,
+    stubs: Stubs,
+    pal: bool,
+    cia_clock: bool,
+    song: u8,
+) -> (Cpu, Harness) {
     let mut cpu = Cpu::new(mos6510::Model::Mos6510);
     cpu.set_port_registers(PORT_DDR, PORT_DATA);
     cpu.set_port_input(PORT_PINS);
@@ -810,10 +898,11 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
     cpu.p |= I_FLAG;
     cpu.jump(stubs.init);
 
-    let mut harness = Harness::new(Rc::clone(machine), clock_hz, stubs);
+    let mut harness = Harness::new(Rc::clone(machine), stubs, pal, cia_clock);
     let mut budget = 20_000_000u64;
-    // An IRQ through the default halt vector mid-init also lands on the halt
-    // loop, but with S below $FD; only a real return restores it.
+    // An IRQ through the default vector mid-init is acknowledged and returned
+    // from. One through a vector the tune pointed at the halt loop lands there
+    // with S below $FD; only a real return restores it.
     let returned =
         |cpu: &Cpu| cpu.at_instruction_boundary() && cpu.pc == stubs.halt && cpu.s == 0xfd;
     while !returned(&cpu) && !cpu.jammed() && budget > 0 {
@@ -822,7 +911,7 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
     }
     // Whose handler is installed decides who drives the frame. A tune with no
     // play address at all is driven purely by its own interrupts.
-    harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.halt;
+    harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.irq;
     let init_returned = returned(&cpu) && !cpu.jammed();
     if harness.frame_clock {
         // Clears an interrupt decision latched under the CIA line before the harness took over.
@@ -842,11 +931,15 @@ struct Harness {
     stubs: Stubs,
     /// False for a tune with no play address, which must never be called.
     has_play_stub: bool,
-    /// Cycles since the last harness-generated frame tick, and a tick that has
-    /// arrived but not yet be delivered.
+    /// Cycles into the current raster frame, and a tick that has arrived but
+    /// not yet been delivered.
     frame_cycles: u64,
     frame_due: bool,
+    /// One raster frame for the video standard; only VBL-speed songs use it.
     frame_period: u64,
+    /// The song's speed bit: true means play is driven by CIA 1 timer A
+    /// underflows, false by the raster frame.
+    cia_clock: bool,
     /// Only a tune that left the interrupt vector to us is played on a harness
     /// clock; a tune that installed its own handler owns its own timing, and
     /// ticking it as well would call a play routine it is not using.
@@ -860,7 +953,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new(machine: Rc<RefCell<Machine>>, clock_hz: f64, stubs: Stubs) -> Self {
+    fn new(machine: Rc<RefCell<Machine>>, stubs: Stubs, pal: bool, cia_clock: bool) -> Self {
         let has_play_stub = {
             let m = machine.borrow();
             m.ram[usize::from(stubs.play)] == 0x20
@@ -873,8 +966,12 @@ impl Harness {
             has_play_stub,
             frame_cycles: 0,
             frame_due: false,
-            // Overridden once the tune's own clock preference is known.
-            frame_period: (clock_hz / 50.0) as u64,
+            frame_period: if pal {
+                PAL_FRAME_CYCLES
+            } else {
+                NTSC_FRAME_CYCLES
+            },
+            cia_clock,
             frame_clock: false,
             irqs: 0,
             frames: 0,
@@ -884,13 +981,6 @@ impl Harness {
                 ..Trace::new()
             },
         }
-    }
-
-    /// A tune that asked for CIA 1 timer A but never programmed one still has to
-    /// be played; the CIA's nominal rate is 60 Hz, which is what the raster
-    /// interrupt stands in for on a 50 Hz machine.
-    fn set_frame_clock(&mut self, clock_hz: f64, cia_requested: bool, pal: bool) {
-        self.frame_period = (clock_hz / if cia_requested || !pal { 60.0 } else { 50.0 }) as u64;
     }
 
     /// One Φ2 cycle: advance the CIA, then either drive the play stub (frame
@@ -903,7 +993,13 @@ impl Harness {
             let m = self.machine.borrow();
             self.trace.note(pc, cpu.at_instruction_boundary(), &m.ram);
         }
-        let underflow = self.machine.borrow().cia.borrow_mut().tick();
+        let (underflow, line_rose) = {
+            let m = self.machine.borrow();
+            let mut cia = m.cia.borrow_mut();
+            let before = cia.line();
+            let underflow = cia.tick();
+            (underflow, cia.line() && !before)
+        };
         if self.frame_clock {
             // The tune brought no handler, so the harness is the player. It
             // cannot wait on the processor's interrupt flag, because a tune
@@ -911,19 +1007,39 @@ impl Harness {
             // machine reaches the player through the Kernal's own chain, which
             // runs with interrupts enabled by then. Enter the play stub
             // directly, at an instruction boundary, with the processor idle.
-            if self.machine.borrow().cia.borrow().started {
-                self.frame_due |= underflow;
+            let tick = if self.cia_clock {
+                // A CIA-speed song: every timer A underflow is a play call,
+                // whatever latch the tune has written since, and none while
+                // the tune has stopped the timer through $DC0E.
+                underflow
+            } else if self.machine.borrow().cia.borrow().started {
+                // A VBL-speed song that started the timer itself: unchanged.
+                line_rose
             } else {
+                // A VBL-speed song: one call per raster frame. The frame
+                // keeps its own phase, as the raster does, so a call held
+                // back below does not push every later frame back with it.
                 self.frame_cycles += 1;
-                self.frame_due |= self.frame_cycles >= self.frame_period;
-            }
+                if self.frame_cycles >= self.frame_period {
+                    self.frame_cycles -= self.frame_period;
+                    true
+                } else {
+                    false
+                }
+            };
+            self.frame_due |= tick;
             // A tick that arrives while an instruction is still running, or
             // while a previous play call has not returned, is held rather than
             // dropped: losing it would silently slow every tune whose play
             // routine happens to straddle the tick.
             if self.frame_due && cpu.at_instruction_boundary() && cpu.pc == self.stubs.halt {
                 self.frame_due = false;
-                self.frame_cycles = 0;
+                if self.cia_clock {
+                    // The handler that calls play on a real machine reads
+                    // $DC0D first (the KERNAL's at $EA7E), which clears the
+                    // timer A flag. The harness stands in for that handler.
+                    self.machine.borrow().cia.borrow_mut().flags &= !0x01;
+                }
                 cpu.jump(self.stubs.play);
                 self.frames += 1;
             }
@@ -989,7 +1105,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         _ => true,
     };
     let model = if pal { Model::Pal } else { Model::Ntsc };
-    let clock_hz = model.clock_hz();
 
     let stubs = place_stubs(loaded.load, loaded.data.len()).ok_or(
         "the tune's block occupies every free page, leaving nowhere for the harness's call stubs",
@@ -1029,8 +1144,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     if opts.trace {
         machine.borrow().trace.set(true);
     }
-    let (mut cpu, mut harness) = start(&machine, stubs, clock_hz, loaded.song);
-    harness.set_frame_clock(clock_hz, loaded.cia_clock, pal);
+    let (mut cpu, mut harness) = start(&machine, stubs, pal, loaded.cia_clock, loaded.song);
 
     let total = (opts.seconds * RATE) as usize;
     let mut sink: DynSink = match opts.sink {
@@ -1207,4 +1321,45 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cycles from one underflow to the next, after the first.
+    fn period(cia: &mut Cia) -> u64 {
+        while !cia.tick() {}
+        let mut n = 1;
+        while !cia.tick() {
+            n += 1;
+        }
+        n
+    }
+
+    #[test]
+    fn cia_timer_a_period_is_latch_plus_one() {
+        let mut cia = Cia::default();
+        cia.kernal_timer_a(true);
+        assert_eq!(period(&mut cia), u64::from(KERNAL_TIMER_A_PAL) + 1);
+        let mut cia = Cia::default();
+        cia.kernal_timer_a(false);
+        assert_eq!(period(&mut cia), u64::from(KERNAL_TIMER_A_NTSC) + 1);
+    }
+
+    #[test]
+    fn the_kernal_state_raises_the_interrupt_line() {
+        let mut cia = Cia::default();
+        cia.kernal_timer_a(true);
+        assert!(cia.timer_a_running());
+        assert_eq!(cia.counter, KERNAL_TIMER_A_PAL);
+        while !cia.tick() {}
+        assert!(cia.line(), "timer A interrupt is not enabled");
+    }
+
+    #[test]
+    fn the_frame_constants_are_the_vic_ii_raster_frames() {
+        assert_eq!(PAL_FRAME_CYCLES, 19_656);
+        assert_eq!(NTSC_FRAME_CYCLES, 17_095);
+    }
 }

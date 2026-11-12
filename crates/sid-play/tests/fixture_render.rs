@@ -286,6 +286,185 @@ fn audio_sink_without_the_feature_says_how_to_get_it() {
     );
 }
 
+// Timing tests. Each builds a tiny PSID in memory, renders it, and compares the
+// "N frames driven" figure against the number of play calls the documented
+// clock implies over the "N cycles" the render reports. The cycle count rather
+// than seconds*clock is used because the render stops on a 4096-sample block
+// boundary, which overshoots the requested length by up to 4095 samples.
+
+/// The two processor clocks, as `mos6581::Model::clock_hz` gives them.
+const PAL_CLOCK: f64 = 985_248.0;
+const NTSC_CLOCK: f64 = 1_022_727.0;
+/// One VIC-II raster frame in cycles: 6569 (PAL) 312 lines x 63 cycles, and
+/// 6567R8 (NTSC) 263 lines x 65 cycles (Christian Bauer, "The MOS 6567/6569
+/// video controller (VIC-II) and its application in the Commodore 64",
+/// section 3.4, table of video display dimensions).
+const PAL_FRAME: f64 = 312.0 * 63.0;
+const NTSC_FRAME: f64 = 263.0 * 65.0;
+/// The KERNAL's 1/60 s timer A latch for PAL, $4025 (ROM routine at $FDDD;
+/// also the PSID format's "SID file environment"). The timer underflows every
+/// latch+1 cycles.
+const KERNAL_LATCH_PAL: f64 = 16_421.0;
+
+/// A version 2 PSID with one song, loaded at $1000 from the header, whose init
+/// is at $1000 and whose play is at `play`. The flags word is zero, so the
+/// header expresses no clock preference and the harness defaults to PAL.
+fn psid(code: &[u8], play: u16, speed: u32) -> Vec<u8> {
+    let mut b = vec![0u8; 0x7c];
+    b[0..4].copy_from_slice(b"PSID");
+    b[0x04..0x06].copy_from_slice(&2u16.to_be_bytes());
+    b[0x06..0x08].copy_from_slice(&0x7cu16.to_be_bytes());
+    b[0x08..0x0a].copy_from_slice(&0x1000u16.to_be_bytes());
+    b[0x0a..0x0c].copy_from_slice(&0x1000u16.to_be_bytes());
+    b[0x0c..0x0e].copy_from_slice(&play.to_be_bytes());
+    b[0x0e..0x10].copy_from_slice(&1u16.to_be_bytes());
+    b[0x10..0x12].copy_from_slice(&1u16.to_be_bytes());
+    b[0x12..0x16].copy_from_slice(&speed.to_be_bytes());
+    b.extend_from_slice(code);
+    // The loader refuses anything shorter than 128 bytes, so a very short
+    // block is padded with zeros that nothing executes.
+    if b.len() < 0x80 {
+        b.resize(0x80, 0);
+    }
+    b
+}
+
+/// What the summary line reports about a render.
+struct Summary {
+    cycles: f64,
+    frames: f64,
+    chip_writes: u64,
+}
+
+/// The number printed immediately before `label` in the summary line.
+fn figure_before(report: &str, label: &str) -> u64 {
+    let words: Vec<&str> = report.split_whitespace().collect();
+    words
+        .iter()
+        .position(|w| *w == label)
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| words[i].parse().ok())
+        .unwrap_or_else(|| panic!("no figure before {label:?} in: {report}"))
+}
+
+/// Render a PSID built in memory and parse the summary line.
+fn render_built(name: &str, bytes: &[u8], seconds: &str, extra: &[&str]) -> Summary {
+    let dir = std::env::temp_dir().join(format!("sidplay-timing-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let tune = dir.join("tune.sid");
+    let out = dir.join("out.wav");
+    std::fs::write(&tune, bytes).unwrap();
+    let run = Command::new(harness())
+        .arg(&tune)
+        .args(["--seconds", seconds])
+        .args(extra)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("the harness binary would not run");
+    std::fs::remove_dir_all(&dir).ok();
+    let report = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(
+        run.status.success(),
+        "the harness failed: {report}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    Summary {
+        cycles: figure_before(&report, "cycles,") as f64,
+        frames: figure_before(&report, "frames") as f64,
+        chip_writes: figure_before(&report, "chip"),
+    }
+}
+
+fn assert_frames(s: &Summary, period: f64, what: &str) {
+    let expected = s.cycles / period;
+    assert!(
+        (s.frames - expected).abs() <= 2.0,
+        "{what}: {} frames driven over {} cycles, expected {expected:.1} (one per {period} cycles)",
+        s.frames,
+        s.cycles
+    );
+}
+
+/// A CIA-speed song whose init only rewrites the timer A latch, never the
+/// control register, exactly as a tempo table does. Play must follow the
+/// latch: one call per latch+1 cycles.
+#[test]
+fn a_cia_speed_song_that_rewrites_only_the_latch_plays_at_the_latch_rate() {
+    // init: LDA #$00 / STA $DC04 / LDA #$80 / STA $DC05 / RTS; play: RTS.
+    let code = [
+        0xa9, 0x00, 0x8d, 0x04, 0xdc, 0xa9, 0x80, 0x8d, 0x05, 0xdc, 0x60, 0x60,
+    ];
+    let s = render_built("latch", &psid(&code, 0x100b, 1), "2", &[]);
+    assert_frames(&s, f64::from(0x8000 + 1), "latch $8000");
+}
+
+/// A CIA-speed song that never touches the CIA runs on the timer exactly as the
+/// KERNAL left it.
+#[test]
+fn a_cia_speed_song_that_leaves_the_cia_alone_runs_on_the_kernal_timer() {
+    // init: RTS; play: RTS.
+    let s = render_built("untouched", &psid(&[0x60, 0x60], 0x1001, 1), "2", &[]);
+    assert_frames(&s, KERNAL_LATCH_PAL + 1.0, "KERNAL latch $4025");
+}
+
+/// A CIA-speed song whose init enables interrupts and keeps running across a
+/// timer underflow must still finish its init. The timer is running from
+/// before init, so an interrupt arrives while init is still busy; it has to be
+/// acknowledged and returned from rather than strand the processor.
+#[test]
+fn a_cia_speed_init_that_enables_interrupts_still_finishes() {
+    // $1000 CLI
+    // $1001 LDY #$20
+    // $1003 LDX #$00
+    // $1005 DEX / BNE $1005
+    // $1008 DEY / BNE $1003      (about 41,000 cycles: two KERNAL periods)
+    // $100B SEI
+    // $100C LDA #$0F / STA $D418
+    // $1011 RTS
+    // $1012 RTS (play)
+    let code = [
+        0x58, 0xa0, 0x20, 0xa2, 0x00, 0xca, 0xd0, 0xfd, 0x88, 0xd0, 0xf8, 0x78, 0xa9, 0x0f, 0x8d,
+        0x18, 0xd4, 0x60, 0x60,
+    ];
+    let s = render_built("cli", &psid(&code, 0x1012, 1), "1", &[]);
+    assert_eq!(
+        s.chip_writes, 1,
+        "init never reached its volume write after an interrupt arrived mid-init"
+    );
+    assert_frames(&s, KERNAL_LATCH_PAL + 1.0, "KERNAL latch after a busy init");
+}
+
+/// A VBL song on PAL is called once per 6569 raster frame. Thirty seconds makes
+/// the old clock/50 period (19704 cycles) miss by more than the tolerance.
+#[test]
+fn a_vbl_song_on_pal_is_called_once_per_raster_frame() {
+    let s = render_built("vbl-pal", &psid(&[0x60, 0x60], 0x1001, 0), "30", &[]);
+    assert_frames(&s, PAL_FRAME, "PAL raster frame");
+    assert!(
+        (s.cycles / PAL_CLOCK - 30.0).abs() < 0.2,
+        "the render ran {} cycles, not about 30 PAL seconds",
+        s.cycles
+    );
+}
+
+/// A VBL song on NTSC is called once per 6567R8 raster frame.
+#[test]
+fn a_vbl_song_on_ntsc_is_called_once_per_raster_frame() {
+    let s = render_built(
+        "vbl-ntsc",
+        &psid(&[0x60, 0x60], 0x1001, 0),
+        "20",
+        &["--ntsc"],
+    );
+    assert_frames(&s, NTSC_FRAME, "NTSC raster frame");
+    assert!(
+        (s.cycles / NTSC_CLOCK - 20.0).abs() < 0.2,
+        "the render ran {} cycles, not about 20 NTSC seconds",
+        s.cycles
+    );
+}
+
 #[test]
 fn an_unknown_sink_is_refused() {
     let tune = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
