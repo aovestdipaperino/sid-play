@@ -305,7 +305,7 @@ Median spectral distance over the 17-tune corpus: 5.9 dB at the start, 4.5 dB af
 Structural harness fixes (commits 468fe9c, 0239d63, de4ac48): CIA-speed songs run on timer A in the KERNAL post-reset state (`Axel_F` had played 9% fast); VBL songs run on the VIC-II frame (19656 cycles PAL, 17095 NTSC); a KERNAL-like IRQ chain; the play address is always driven and the KERNAL timer A runs for every song; header length 0x76 or 0x7C; the CIA CRA force-load strobe.
 
 Known remaining gaps:
-- VBL songs with play=0 are driven only by the KERNAL's CIA 1 timer A interrupt (60 Hz) instead of a 50 Hz raster IRQ, since there is no VIC-II. That covers only tunes that leave the CIA interrupt enabled. A tune that writes $7F to $DC0D and sets up its own raster IRQ through $D01A/$D012 gets no interrupts at all and plays silent. A follow-up is due.
+- ~~VBL songs with play=0 get no raster IRQ~~ Fixed after 0.3.0: a minimal VIC-II raster interrupt ($D011/$D012/$D019/$D01A), CIA 2 timer A on NMI with the KERNAL's $FFFA/$0318 entry, and RSID files accepted. `data/Tetris.sid` (RSID, raster IRQ plus NMI digis) plays at 2.8 dB from VICE; the 17 corpus tunes render byte-identical. RSIDs that need ROM routines beyond the IRQ/NMI chain are still out of scope.
 - The filter top end (12 kHz against 16 to 21 kHz on real chips).
 - The `Alternative_World_Games` intermodulation band is still about 7 dB low.
 - `Acceleration-mix` and `64_Dwarfs` (high-resonance filter tunes) are the furthest from VICE, but VICE is itself biased there.

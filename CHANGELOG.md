@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1 - 2026-11-13
+
+### Added
+
+- RSID files are accepted. They share the PSID header and always have play
+  address 0, so they run on the existing interrupt-driven path.
+- A minimal VIC-II raster interrupt: $D011 bit 7 and $D012 (beam position and
+  compare line), the $D019 latch and the $D01A enable, mirrored through
+  $D000-$D3FF. It shares the IRQ input with CIA 1, so a tune that silences
+  CIA 1 and drives itself from a raster IRQ now plays instead of staying silent.
+- CIA 2 timer A, wired to NMI, with the KERNAL's NMI entry ($FFFA leads to
+  `SEI / JMP ($0318)`) and a default $0318 handler that acknowledges CIA 2.
+  Tunes that pace sample playback with NMIs now get them.
+
+Effect: `Tetris` (RSID, raster IRQ plus NMI digi drums) plays; the rest of the
+corpus renders byte-identical.
+
 ## 0.3.0 - 2026-11-13
 
 Builds on mos6581 0.3. The sound changes in this release come from that

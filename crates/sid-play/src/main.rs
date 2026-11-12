@@ -40,16 +40,22 @@ struct Stubs {
     /// Where $0314 points by default: acknowledge CIA 1, restore the registers
     /// and return, as the KERNAL's handler ends ($EA7E-$EA86).
     ack: u16,
+    /// Where the hardware NMI vector points: `SEI / JMP ($0318)`, as the
+    /// KERNAL's NMI entry at $FE43 begins.
+    nmi_entry: u16,
+    /// Where $0318 points by default: acknowledge CIA 2 and return.
+    nmi_ack: u16,
     /// True when the tune's block leaves $EA31-$EA86 free, so the KERNAL's
     /// own chain entry points can be laid down there for handlers that end
     /// with `JMP $EA31` or `JMP $EA81`.
     kernal_chain: bool,
 }
 
-/// Five slots of 8 bytes: init and play call stubs (6 bytes each), the halt
-/// loop (3), the IRQ entry (8) and the default handler (9, so it takes the
-/// last slot and a byte of the sixth).
-const STUB_SPAN: usize = 0x30;
+/// Eight slots of 8 bytes: init and play call stubs (6 bytes each), the halt
+/// loop (3), the IRQ entry (8), the default IRQ handler (9, so it spills a
+/// byte into the sixth slot), the NMI entry (4) and the default NMI handler
+/// (6).
+const STUB_SPAN: usize = 0x40;
 
 /// The KERNAL's IRQ handler entry ($EA31) and the part of it that acknowledges
 /// CIA 1 and restores the registers ($EA7E-$EA86). See [`write_kernal_chain`].
@@ -77,6 +83,8 @@ fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
                 halt: page + 16,
                 entry: page + 24,
                 ack: page + 32,
+                nmi_entry: page + 48,
+                nmi_ack: page + 56,
                 kernal_chain,
             });
         }
@@ -86,6 +94,9 @@ fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
 }
 
 const IRQ_VECTOR: u16 = 0xfffe;
+const NMI_VECTOR: u16 = 0xfffa;
+/// $0318-$0319, NMINV: the RAM vector the KERNAL's NMI entry jumps through.
+const NMINV: u16 = 0x0318;
 const RESET_VECTOR: u16 = 0xfffc;
 
 /// The status register's interrupt-disable bit.
@@ -293,7 +304,7 @@ enum PsidError {
 impl fmt::Display for PsidError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotPsid => write!(f, "not a PSID file"),
+            Self::NotPsid => write!(f, "not a PSID or RSID file"),
             Self::ShortHeader {
                 version,
                 need,
@@ -368,7 +379,7 @@ struct Loaded {
 }
 
 fn parse(bytes: &[u8]) -> Result<Psid, PsidError> {
-    if bytes.len() < 6 || &bytes[0..4] != b"PSID" {
+    if bytes.len() < 6 || !matches!(&bytes[0..4], b"PSID" | b"RSID") {
         return Err(PsidError::NotPsid);
     }
     let u16be = |o: usize| u16::from_be_bytes([bytes[o], bytes[o + 1]]);
@@ -594,6 +605,37 @@ impl Cia {
         }
     }
 
+    /// A read of one of the 16 registers. Only timer A and the interrupt and
+    /// control registers are modelled; the rest read as zero.
+    fn read_reg(&mut self, reg: usize) -> u8 {
+        match reg {
+            4 => (self.counter & 0xff) as u8,
+            5 => (self.counter >> 8) as u8,
+            0xd => self.read_icr(),
+            0xe => self.control,
+            _ => 0,
+        }
+    }
+
+    /// A write to one of the 16 registers; unmodelled ones are ignored.
+    fn write_reg(&mut self, reg: usize, value: u8) {
+        match reg {
+            4 | 5 => {
+                if reg == 4 {
+                    self.latch = (self.latch & 0xff00) | u16::from(value);
+                } else {
+                    self.latch = (self.latch & 0x00ff) | (u16::from(value) << 8);
+                }
+                if !self.timer_a_running() {
+                    self.counter = self.latch;
+                }
+            }
+            0xd => self.write_icr(value),
+            0xe => self.write_control(value),
+            _ => {}
+        }
+    }
+
     /// A write to CRA. The LOAD bit is a strobe: it is acted on and never
     /// stored, so it reads back as 0, and with 1 it loads the counter from the
     /// latch whether or not the timer runs (see [`CRA_LOAD`]). Loaded here, the
@@ -617,10 +659,122 @@ impl Cia {
     }
 }
 
+/// The VIC-II's raster interrupt and nothing else: a beam position, the compare
+/// line, and the interrupt latch and enable registers. Source: Christian Bauer,
+/// "The MOS 6567/6569 video controller (VIC-II) and its application in the
+/// Commodore 64", section 3.12 (interrupts) and the register list in 3.2:
+/// $D011 bit 7 is bit 8 of the raster line ("RST8"), $D012 reads the current
+/// line and writes the compare line, $D019 is the latch (bit 0 IRST, bit 7 set
+/// while any enabled source is latched, cleared by writing 1 to a bit), and
+/// $D01A enables sources. The registers repeat every 64 bytes through
+/// $D000-$D3FF. The other sources (sprite collisions, light pen) never fire
+/// here, and every other register is plain memory, because nothing else the
+/// chip does is audible.
+struct Vic {
+    line: u16,
+    cycle: u16,
+    lines: u16,
+    cycles_per_line: u16,
+    compare: u16,
+    /// $D011 as written; bit 7 is replaced by the beam's bit 8 on read.
+    control: u8,
+    latch: u8,
+    enable: u8,
+}
+
+/// $D011, $D012, $D019 and $D01A, as offsets in the 64-byte register file.
+const VIC_CONTROL: usize = 0x11;
+const VIC_RASTER: usize = 0x12;
+const VIC_LATCH: usize = 0x19;
+const VIC_ENABLE: usize = 0x1a;
+/// $D019/$D01A bit 0: the raster source.
+const VIC_IRST: u8 = 0x01;
+
+impl Vic {
+    /// The line geometry is the one [`PAL_FRAME_CYCLES`] and
+    /// [`NTSC_FRAME_CYCLES`] are built from.
+    fn new(model: Model) -> Self {
+        let (lines, cycles_per_line) = if matches!(model, Model::Pal) {
+            (312, 63)
+        } else {
+            (263, 65)
+        };
+        Self {
+            line: 0,
+            cycle: 0,
+            lines,
+            cycles_per_line,
+            compare: 0,
+            control: 0,
+            latch: 0,
+            enable: 0,
+        }
+    }
+
+    /// Whether an address in $D000-$D3FF is one of the modelled registers.
+    fn owns(address: usize) -> bool {
+        matches!(
+            address & 0x3f,
+            VIC_CONTROL | VIC_RASTER | VIC_LATCH | VIC_ENABLE
+        )
+    }
+
+    /// Advance one cycle. The compare is made as each line starts, so the
+    /// latch is set once per frame, on the line that matches.
+    fn tick(&mut self) {
+        self.cycle += 1;
+        if self.cycle == self.cycles_per_line {
+            self.cycle = 0;
+            self.line += 1;
+            if self.line == self.lines {
+                self.line = 0;
+            }
+            if self.line == self.compare {
+                self.latch |= VIC_IRST;
+            }
+        }
+    }
+
+    /// The chip's IRQ output: asserted while an enabled source is latched.
+    fn line(&self) -> bool {
+        self.latch & self.enable & 0x0f != 0
+    }
+
+    fn read(&self, reg: usize) -> u8 {
+        match reg {
+            VIC_CONTROL => (self.control & 0x7f) | (((self.line >> 8) as u8) << 7),
+            VIC_RASTER => (self.line & 0xff) as u8,
+            // Unused bits read as 1.
+            VIC_LATCH => self.latch | 0x70 | if self.line() { 0x80 } else { 0 },
+            VIC_ENABLE => self.enable | 0xf0,
+            _ => 0,
+        }
+    }
+
+    fn write(&mut self, reg: usize, value: u8) {
+        match reg {
+            VIC_CONTROL => {
+                self.control = value;
+                self.compare = (self.compare & 0xff) | (u16::from(value >> 7) << 8);
+            }
+            VIC_RASTER => self.compare = (self.compare & 0x100) | u16::from(value),
+            // Writing 1 to a latch bit acknowledges it.
+            VIC_LATCH => self.latch &= !(value & 0x0f),
+            VIC_ENABLE => self.enable = value & 0x0f,
+            _ => {}
+        }
+    }
+}
+
 struct Machine {
     ram: [u8; 0x1_0000],
     sid: Sid,
     cia: RefCell<Cia>,
+    /// CIA 2, whose line is wired to the processor's NMI input. Tunes use its
+    /// timer A to pace sample playback.
+    cia2: RefCell<Cia>,
+    /// The VIC-II's raster interrupt, for tunes driven by it.
+    vic: RefCell<Vic>,
     /// How many writes have reached the chip. Reported in the summary as a
     /// diagnostic; it is deliberately not used to decide anything.
     sid_writes: Cell<u64>,
@@ -650,6 +804,8 @@ impl Machine {
             ram: [0; 0x1_0000],
             sid: Sid::new(model, RATE),
             cia: RefCell::new(Cia::default()),
+            cia2: RefCell::new(Cia::default()),
+            vic: RefCell::new(Vic::new(model)),
             sid_writes: Cell::new(0),
             trace: Cell::new(false),
             rom_reads: RefCell::new(BTreeMap::new()),
@@ -674,13 +830,9 @@ impl Machine {
         }
         match a {
             0xd400..=0xd5ff => self.sid.read(a - 0xd400),
-            0xdc00..=0xdc0f => match a - 0xdc00 {
-                4 => (self.cia.borrow().counter & 0xff) as u8,
-                5 => (self.cia.borrow().counter >> 8) as u8,
-                0xd => self.cia.borrow_mut().read_icr(),
-                0xe => self.cia.borrow().control,
-                _ => 0,
-            },
+            0xd000..=0xd3ff if Vic::owns(a) => self.vic.borrow().read(a & 0x3f),
+            0xdc00..=0xdc0f => self.cia.borrow_mut().read_reg(a - 0xdc00),
+            0xdd00..=0xdd0f => self.cia2.borrow_mut().read_reg(a - 0xdd00),
             _ => self.ram[a],
         }
     }
@@ -713,22 +865,9 @@ impl Machine {
                 }
                 self.sid.write(reg, value);
             }
-            0xdc00..=0xdc0f => match a - 0xdc00 {
-                4 | 5 => {
-                    let mut cia = self.cia.borrow_mut();
-                    if a - 0xdc00 == 4 {
-                        cia.latch = (cia.latch & 0xff00) | u16::from(value);
-                    } else {
-                        cia.latch = (cia.latch & 0x00ff) | (u16::from(value) << 8);
-                    }
-                    if !cia.timer_a_running() {
-                        cia.counter = cia.latch;
-                    }
-                }
-                0xd => self.cia.borrow_mut().write_icr(value),
-                0xe => self.cia.borrow_mut().write_control(value),
-                _ => {}
-            },
+            0xd000..=0xd3ff if Vic::owns(a) => self.vic.borrow_mut().write(a & 0x3f, value),
+            0xdc00..=0xdc0f => self.cia.borrow_mut().write_reg(a - 0xdc00, value),
+            0xdd00..=0xdd0f => self.cia2.borrow_mut().write_reg(a - 0xdd00, value),
             // $01 is the CPU port register. Its bank bits select RAM areas that
             // this flat address space already behaves as, so it is stored as
             // ordinary memory and nothing further happens.
@@ -808,6 +947,18 @@ fn write_ack_stub(ram: &mut [u8; 0x1_0000], ack: u16) {
     let s = usize::from(ack);
     ram[s..s + ACK_AND_RETURN.len()].copy_from_slice(&ACK_AND_RETURN);
 }
+
+/// The NMI entry the hardware vector leads to: `SEI / JMP ($0318)`, the first
+/// two instructions of the KERNAL's NMI entry at $FE43 (`NNMI SEI`, `JMP
+/// (NMINV)`) in the commented listing at <https://www.pagetable.com/c64ref/c64disasm/>.
+const NMI_ENTRY: [u8; 4] = [0x78, 0x6c, 0x18, 0x03];
+
+/// The default handler $0318 points at: `PHA / LDA $DD0D / PLA / RTI`. The
+/// KERNAL's own handler (from $FE47) also checks the RESTORE key and the RS-232
+/// lines, none of which exist here; what it does about the interrupt is read
+/// $DD0D, which clears CIA 2's flags. A tune that enables a CIA 2 interrupt
+/// without installing a handler is acknowledged and returned to.
+const NMI_ACK: [u8; 6] = [0x48, 0xad, 0x0d, 0xdd, 0x68, 0x40];
 
 /// The KERNAL's own chain entry points, for a $0314 handler that hands over to
 /// the KERNAL when it is done, as most do with `JMP $EA31` (or `JMP $EA81` to
@@ -1019,6 +1170,17 @@ fn setup(
         m.ram[usize::from(CINV + 1)] = (stubs.ack >> 8) as u8;
         m.ram[usize::from(IRQ_VECTOR)] = (stubs.entry & 0xff) as u8;
         m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.entry >> 8) as u8;
+        // The same two levels for NMI: $FFFA leads to the KERNAL's entry,
+        // which jumps through $0318, and $0318 leads to a handler that
+        // acknowledges CIA 2. Set here for the same reason as $0314.
+        let e = usize::from(stubs.nmi_entry);
+        m.ram[e..e + NMI_ENTRY.len()].copy_from_slice(&NMI_ENTRY);
+        let a = usize::from(stubs.nmi_ack);
+        m.ram[a..a + NMI_ACK.len()].copy_from_slice(&NMI_ACK);
+        m.ram[usize::from(NMINV)] = (stubs.nmi_ack & 0xff) as u8;
+        m.ram[usize::from(NMINV + 1)] = (stubs.nmi_ack >> 8) as u8;
+        m.ram[usize::from(NMI_VECTOR)] = (stubs.nmi_entry & 0xff) as u8;
+        m.ram[usize::from(NMI_VECTOR + 1)] = (stubs.nmi_entry >> 8) as u8;
         m.ram[usize::from(RESET_VECTOR)] = (stubs.halt & 0xff) as u8;
         m.ram[usize::from(RESET_VECTOR + 1)] = (stubs.halt >> 8) as u8;
     }
@@ -1147,7 +1309,16 @@ impl Harness {
             let m = self.machine.borrow();
             self.trace.note(pc, cpu.at_instruction_boundary(), &m.ram);
         }
-        let underflow = self.machine.borrow().cia.borrow_mut().tick();
+        let underflow = {
+            let m = self.machine.borrow();
+            m.vic.borrow_mut().tick();
+            m.cia2.borrow_mut().tick();
+            m.cia.borrow_mut().tick()
+        };
+        // CIA 2's line is wired to NMI on every tune: nothing else drives that
+        // input, and the processor only reacts to its rising edge, so a tune
+        // that never enables a CIA 2 interrupt never sees one.
+        cpu.set_nmi(self.machine.borrow().cia2.borrow().line());
         if self.frame_clock {
             // The tune has a play address, so the harness is the player. It
             // cannot wait on the processor's interrupt flag, because a tune
@@ -1195,11 +1366,12 @@ impl Harness {
             // level latched from the last init cycle.
             cpu.set_irq(false);
         } else {
-            // The tune has no play address and drives itself, by its CIA the
-            // same way it is on a real machine: the CIA's level-triggered line
-            // is wired to the processor's, which samples it where the hardware
-            // does.
-            cpu.set_irq(self.machine.borrow().cia.borrow().line());
+            // The tune has no play address and drives itself, by CIA 1 or the
+            // raster interrupt, the same way it is on a real machine: both
+            // chips' level-triggered outputs share the processor's IRQ input,
+            // which samples it where the hardware does.
+            let m = self.machine.borrow();
+            cpu.set_irq(m.cia.borrow().line() || m.vic.borrow().line());
         }
         // Counted at the boundary, so the summary reports interrupts the
         // processor actually took rather than ones merely requested.
@@ -1642,6 +1814,119 @@ mod tests {
             let loaded = resolve(&psid(speed), &bytes, Some(wanted)).unwrap();
             assert_eq!(loaded.cia_clock, cia, "song {}", loaded.song);
         }
+    }
+
+    /// RSID files share the PSID header layout; only the magic differs.
+    #[test]
+    fn rsid_magic_is_accepted() {
+        let mut bytes = vec![0u8; HEADER_LEN_V2];
+        bytes[5] = 2;
+        for (magic, ok) in [(b"PSID", true), (b"RSID", true), (b"XSID", false)] {
+            bytes[..4].copy_from_slice(magic);
+            assert_eq!(
+                parse(&bytes).is_ok(),
+                ok,
+                "{}",
+                String::from_utf8_lossy(magic)
+            );
+        }
+    }
+
+    /// The raster latch is set once per frame, on the compare line, and an
+    /// acknowledge through $D019 releases the line.
+    #[test]
+    fn the_raster_interrupt_fires_once_per_frame() {
+        let mut vic = Vic::new(Model::Pal);
+        vic.write(VIC_RASTER, 1);
+        vic.write(VIC_ENABLE, VIC_IRST);
+        let mut fired = 0;
+        for _ in 0..3 * PAL_FRAME_CYCLES {
+            vic.tick();
+            if vic.line() {
+                fired += 1;
+                assert_eq!(vic.read(VIC_RASTER), 1);
+                assert_eq!(vic.read(VIC_LATCH) & 0x81, 0x81);
+                vic.write(VIC_LATCH, VIC_IRST);
+                assert!(!vic.line());
+            }
+        }
+        assert_eq!(fired, 3);
+    }
+
+    /// $D011 bit 7 is bit 8 of the compare line, and reads back as bit 8 of
+    /// the beam's.
+    #[test]
+    fn d011_bit_7_extends_the_raster_line() {
+        let mut vic = Vic::new(Model::Pal);
+        vic.write(VIC_CONTROL, 0x80);
+        vic.write(VIC_RASTER, 0x05);
+        vic.write(VIC_ENABLE, VIC_IRST);
+        while !vic.line() {
+            vic.tick();
+        }
+        assert_eq!(vic.line, 0x105);
+        assert_eq!(vic.read(VIC_CONTROL) & 0x80, 0x80);
+        assert_eq!(vic.read(VIC_RASTER), 0x05);
+    }
+
+    /// A tune with no play address, as every RSID is, that silences CIA 1,
+    /// drives itself from a raster IRQ and paces samples with CIA 2 NMIs. Its
+    /// handlers count calls at $2000 (IRQ) and $2001 (NMI).
+    #[test]
+    fn raster_irq_and_cia2_nmi_drive_a_tune() {
+        #[rustfmt::skip]
+        let code = vec![
+            0x78,                               // $1000 SEI
+            0xa9, 0x7f, 0x8d, 0x0d, 0xdc,       // CIA 1 interrupts off
+            0xa9, 0x3a, 0x8d, 0x14, 0x03,       // $0314 = irq ($103A)
+            0xa9, 0x10, 0x8d, 0x15, 0x03,
+            0xa9, 0x45, 0x8d, 0x18, 0x03,       // $0318 = nmi ($1045)
+            0xa9, 0x10, 0x8d, 0x19, 0x03,
+            0xa9, 0x00, 0x8d, 0x12, 0xd0,       // raster compare line 0
+            0xa9, 0x01, 0x8d, 0x1a, 0xd0,       // raster IRQ on
+            0xa9, 0xff, 0x8d, 0x04, 0xdd,       // CIA 2 latch $03FF
+            0xa9, 0x03, 0x8d, 0x05, 0xdd,
+            0xa9, 0x81, 0x8d, 0x0d, 0xdd,       // CIA 2 timer A NMI on
+            0xa9, 0x11, 0x8d, 0x0e, 0xdd,       // start, force load
+            0x58, 0x60,                         // CLI, RTS
+            // $103A irq: INC $2000, ack the raster, KERNAL register restore
+            0xee, 0x00, 0x20, 0xa9, 0x01, 0x8d, 0x19, 0xd0, 0x4c, 0x81, 0xea,
+            // $1045 nmi: PHA, LDA $DD0D, INC $2001, PLA, RTI
+            0x48, 0xad, 0x0d, 0xdd, 0xee, 0x01, 0x20, 0x68, 0x40,
+        ];
+        let loaded = Loaded {
+            load: 0x1000,
+            init: 0x1000,
+            play: 0,
+            song: 1,
+            songs: 1,
+            cia_clock: false,
+            clock_hint: 0,
+            chip_hint: 0,
+            data: code,
+        };
+        let stubs = place_stubs(loaded.load, loaded.data.len()).unwrap();
+        let machine = setup(
+            Model::Pal,
+            &sid_play::poweron::POWERON,
+            &loaded,
+            true,
+            stubs,
+        );
+        let (mut cpu, mut harness) = start(&machine, stubs, true, false, 1);
+        assert!(harness.trace.init_returned, "init did not return");
+        for _ in 0..3 * PAL_FRAME_CYCLES {
+            harness.cycle(&mut cpu);
+        }
+        let m = machine.borrow();
+        let (irqs, nmis) = (m.ram[0x2000], m.ram[0x2001]);
+        assert!((2..=3).contains(&irqs), "raster IRQs: {irqs}");
+        // One NMI per 1024 cycles.
+        let expect = 3 * PAL_FRAME_CYCLES / 1024;
+        assert!(
+            u64::from(nmis).abs_diff(expect) <= 2,
+            "NMIs: {nmis}, expected about {expect}"
+        );
     }
 
     #[test]

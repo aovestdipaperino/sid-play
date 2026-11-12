@@ -4,10 +4,13 @@
 
 # sid-play
 
-Plays C64 PSID tunes through the [`mos6581`](https://crates.io/crates/mos6581) SID emulator. The 6510
+Plays C64 PSID and RSID tunes through the [`mos6581`](https://crates.io/crates/mos6581) SID emulator. The 6510
 code runs on the cycle-exact [`mos6510`](https://crates.io/crates/mos6510) crate
 and the chip output is written to a WAV file by default (`render --sink audio`
-plays it live through the default audio device, with `--features playback`). RSID files are not supported.
+plays it live through the default audio device, with `--features playback`). RSID
+tunes play when they need only the interrupt hardware (CIA 1 and CIA 2 timer A,
+the VIC-II raster interrupt) and the KERNAL's IRQ and NMI entry points; an RSID
+that calls other ROM routines or runs BASIC does not, because there are no ROMs.
 
 Licence: MIT OR Apache-2.0.
 
@@ -45,8 +48,7 @@ gaps" sections of [`docs/provenance.md`](https://github.com/aovestdipaperino/mos
 
 The 0.3.0 sound changes come from mos6581's DC model and output stage, which
 came out of a round against a reference player (VICE `vsid`, ReSID 6581). The
-method, the per-tune distances and the known gaps of that round, including the
-VBL stand-in that leaves tunes using only raster IRQs silent, are in the
+method, the per-tune distances and the known gaps of that round are in the
 "Fidelity against a reference player" section of
 [`HANDSOFF.md`](https://github.com/aovestdipaperino/sid-play/blob/main/HANDSOFF.md).
 
