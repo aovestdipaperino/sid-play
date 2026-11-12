@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/aovestdipaperino/sid-play"
 description = "MOS 6581 SID chip emulator, stepped one Φ2 cycle at a time"
 readme = "README.md"
 keywords = ["sid", "6581", "c64", "emulator", "chiptune"]

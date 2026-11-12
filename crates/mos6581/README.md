@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="mos6581: a cheerful 28-pin chip" width="480">
+</p>
+
 # mos6581
 
 A cycle-stepped MOS 6581 SID chip emulator in Rust. The chip is stepped one Φ2
@@ -19,7 +23,7 @@ ways:
 - The envelope periods, voice and mixer DC, resonance, noise taps and the output
   stage constants come from the datasheet and public documents, or are plain
   choices. They are listed with their derivations in
-  [`docs/provenance.md`](../../docs/provenance.md).
+  [`docs/provenance.md`](https://github.com/aovestdipaperino/sid-play/blob/main/docs/provenance.md).
 
 Building with `--features gpl-data` swaps in measured tables and constants from
 the `sid-gpl-data` crate (reSID data, GPL-2.0). That makes the resulting build
@@ -40,4 +44,4 @@ How far the default build is from the measured one:
   `gpl-data`, about 25x quieter.
 
 The full list of known gaps is in the "Known default-build fidelity gaps" section
-of [`docs/provenance.md`](../../docs/provenance.md).
+of [`docs/provenance.md`](https://github.com/aovestdipaperino/sid-play/blob/main/docs/provenance.md).

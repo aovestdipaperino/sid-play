@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="sid-play: a singing 6581 chip" width="480">
+</p>
+
 # sid-play
 
-Plays C64 PSID tunes through the [`mos6581`](../mos6581) SID emulator. The 6510
+Plays C64 PSID tunes through the [`mos6581`](https://crates.io/crates/mos6581) SID emulator. The 6510
 code runs on the cycle-exact [`mos6510`](https://crates.io/crates/mos6510) crate
 and the chip output is written to a WAV file. RSID files are not supported.
 
@@ -21,7 +25,7 @@ uses the 60 Hz frame clock.
 The default build is GPL-free. It uses AND-approximated combined waveforms, a
 linear 30 Hz to 12 kHz filter cutoff, clean-room chip constants and an all-zero
 power-on RAM image. See the "Clean-room defaults" and "Known default-build
-fidelity gaps" sections of [`docs/provenance.md`](../../docs/provenance.md).
+fidelity gaps" sections of [`docs/provenance.md`](https://github.com/aovestdipaperino/sid-play/blob/main/docs/provenance.md).
 
 The closed filter corner is the biggest audible difference: the scale fixture
 renders at rms 53 by default and 1362 with `gpl-data`, about 25x quieter.

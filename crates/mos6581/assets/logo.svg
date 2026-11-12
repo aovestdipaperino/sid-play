@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320" viewBox="0 0 640 320" role="img" aria-labelledby="t d">
+  <title id="t">mos6581</title>
+  <desc id="d">A cheerful 28-pin 6581 chip with an ADSR envelope badge.</desc>
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f4b"/>
+      <stop offset="1" stop-color="#1f2229"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e9edf2"/>
+      <stop offset="0.5" stop-color="#b8bfca"/>
+      <stop offset="1" stop-color="#8d95a3"/>
+    </linearGradient>
+    <g id="pinTop"><rect x="-4" y="0" width="8" height="18" rx="1.5" fill="url(#pin)"/></g>
+  </defs>
+  <rect x="4" y="4" width="632" height="312" rx="28" fill="#40318d"/>
+  <rect x="18" y="18" width="604" height="284" rx="18" fill="#352879"/>
+  <g transform="translate(0,62)"><use href="#pinTop" x="133.0"/><use href="#pinTop" x="160.8"/><use href="#pinTop" x="188.7"/><use href="#pinTop" x="216.5"/><use href="#pinTop" x="244.4"/><use href="#pinTop" x="272.2"/><use href="#pinTop" x="300.1"/><use href="#pinTop" x="327.9"/><use href="#pinTop" x="355.8"/><use href="#pinTop" x="383.6"/><use href="#pinTop" x="411.5"/><use href="#pinTop" x="439.3"/><use href="#pinTop" x="467.2"/><use href="#pinTop" x="495.0"/></g>
+  <g transform="translate(0,198)"><use href="#pinTop" x="133.0"/><use href="#pinTop" x="160.8"/><use href="#pinTop" x="188.7"/><use href="#pinTop" x="216.5"/><use href="#pinTop" x="244.4"/><use href="#pinTop" x="272.2"/><use href="#pinTop" x="300.1"/><use href="#pinTop" x="327.9"/><use href="#pinTop" x="355.8"/><use href="#pinTop" x="383.6"/><use href="#pinTop" x="411.5"/><use href="#pinTop" x="439.3"/><use href="#pinTop" x="467.2"/><use href="#pinTop" x="495.0"/></g>
+  <rect x="116" y="76" width="396" height="128" rx="10" fill="url(#body)" stroke="#0f1115" stroke-width="3"/>
+  <path d="M116 122 a18 18 0 0 1 0 36" fill="#352879" stroke="#0f1115" stroke-width="3"/>
+  <circle cx="142" cy="186" r="5" fill="#5a6070"/>
+  <text x="488" y="194" text-anchor="end" font-family="'JetBrains Mono','SF Mono',Menlo,Consolas,monospace" font-size="20" font-weight="700" fill="#8e95a3" letter-spacing="2">6581</text>
+  <ellipse cx="262.0" cy="122" rx="15" ry="18" fill="#f4f6fa"/>
+  <circle cx="266.0" cy="126" r="7" fill="#1a1d23"/>
+  <circle cx="269.0" cy="122" r="2.4" fill="#ffffff"/>
+  <ellipse cx="366.0" cy="122" rx="15" ry="18" fill="#f4f6fa"/>
+  <circle cx="370.0" cy="126" r="7" fill="#1a1d23"/>
+  <circle cx="373.0" cy="122" r="2.4" fill="#ffffff"/>
+  <path d="M290.0 150 q24 22 48 0" fill="none" stroke="#f4f6fa" stroke-width="6" stroke-linecap="round"/>
+  <ellipse cx="252.0" cy="152" rx="11" ry="6" fill="#9a6759" opacity="0.85"/>
+  <ellipse cx="376.0" cy="152" rx="11" ry="6" fill="#9a6759" opacity="0.85"/>
+  <g transform="translate(540,64)"><circle r="30" fill="#f26b1d" stroke="#0f1115" stroke-width="3"/><path d="M-20 14 L-11 -14 L-3 -2 L9 -2 L19 14" fill="none" stroke="#1a1d23" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></g>
+  <text x="222" y="276" text-anchor="start" font-family="'JetBrains Mono','SF Mono',Menlo,Consolas,monospace" font-size="40" font-weight="700" fill="#7869c4" letter-spacing="3">mos6581</text>
+  <rect x="420" y="246" width="22" height="34" fill="#7869c4"><animate attributeName="opacity" values="1;1;0;0" dur="1.2s" repeatCount="indefinite"/></rect>
+</svg>

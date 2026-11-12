@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/aovestdipaperino/sid-play"
 description = "Play C64 PSID tunes through the mos6581 SID emulator"
 readme = "README.md"
 keywords = ["sid", "psid", "c64", "player", "chiptune"]

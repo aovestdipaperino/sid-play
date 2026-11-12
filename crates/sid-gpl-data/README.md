@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="sid-gpl-data: a jar of borrowed bytes, tagged temporary" width="480">
+</p>
+
 # sid-gpl-data
 
 GPL-2.0-only. Measurement data borrowed from other projects, kept in one crate
@@ -9,7 +13,7 @@ replaced by clean-room data; when the crate is empty it will be deleted.
 | `WAVE6581`, `WAVE8580` | reSID (Dag Lem) waveform measurements | clean-room combined-waveform model |
 | `CUTOFF_POINTS_6581`, `CUTOFF_POINTS_8580` | reSID `f0_points` | own cutoff measurements or a public model |
 | `POWERON` | libsidplayfp `poweron.bin` | public C64 power-on documentation, or removal |
-| chip constants (`ENV_*`, `EXTFILT_*`, `FILTER_Q_*`, `MIXER_DC`, `VOICE_*`, `NOISE_*`) | reSID (Dag Lem), see `docs/provenance.md` | own measurements or public datasheet values |
+| chip constants (`ENV_*`, `EXTFILT_*`, `FILTER_Q_*`, `MIXER_DC`, `VOICE_*`, `NOISE_*`) | reSID (Dag Lem), see [`docs/provenance.md`](https://github.com/aovestdipaperino/sid-play/blob/main/docs/provenance.md) | own measurements or public datasheet values |
 
 ## Versioning and publishing
 
