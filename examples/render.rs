@@ -134,12 +134,17 @@ impl Trace {
         }
     }
 
-    fn note(&mut self, pc: u16, ram: &[u8; 0x1_0000]) {
+    fn note(&mut self, pc: u16, boundary: bool, ram: &[u8; 0x1_0000]) {
         if !self.enabled {
             return;
         }
         if self.phase == Phase::Init {
             self.init_cycles += 1;
+        }
+        // Operand fetches advance the program counter too; only the first
+        // cycle of an instruction names an instruction site.
+        if !boundary {
+            return;
         }
         if in_range(pc, ROM_BASIC) || in_range(pc, ROM_KERNAL) {
             *self.rom_exec.entry(pc).or_insert(0) += 1;
@@ -807,15 +812,15 @@ impl Harness {
         self.frame_period = (clock_hz / if cia_requested || !pal { 60.0 } else { 50.0 }) as u64;
     }
 
-    /// One Φ2 cycle: advance the CIA, offer any pending interrupt at an
-    /// instruction boundary, step the processor, then let the chip run the cycle
-    /// it just saw. An instruction in progress always finishes, which is why the
-    /// request is only offered when the processor has no cycles left to spend.
+    /// One Φ2 cycle: advance the CIA, then either drive the play stub (frame
+    /// clock) or wire the CIA's line to the processor's IRQ pin. Count an
+    /// interrupt the processor is about to take, tick it one cycle, and render
+    /// the chip for that cycle.
     fn cycle(&mut self, cpu: &mut Cpu) {
         if self.trace.enabled {
             let pc = cpu.pc;
             let m = self.machine.borrow();
-            self.trace.note(pc, &m.ram);
+            self.trace.note(pc, cpu.at_instruction_boundary(), &m.ram);
         }
         let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
@@ -841,6 +846,9 @@ impl Harness {
                 cpu.jump(self.stubs.play);
                 self.frames += 1;
             }
+            // The harness, not the CIA, drives the player here; release any
+            // level latched from the last init cycle.
+            cpu.set_irq(false);
         } else {
             // The tune owns the interrupt vector, so it is driven by its CIA the
             // same way it is on a real machine: the CIA's level-triggered line
