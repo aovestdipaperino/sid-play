@@ -485,6 +485,14 @@ struct Machine {
     /// silently ignored, and the totals alone cannot show that.
     sid_reg_writes: RefCell<[u64; 32]>,
     sid_oob_writes: Cell<u64>,
+    /// `--trace` only: every address read after init finished, so the
+    /// memory a play routine depends on can be compared against what
+    /// was actually loaded. Reads of untouched RAM are what to look for.
+    play_reads: RefCell<BTreeMap<u16, u64>>,
+    running: Cell<bool>,
+    /// Where the tune's own block landed, so a read can be judged inside
+    /// or outside it.
+    block: Cell<(u16, u16)>,
 }
 
 impl Machine {
@@ -499,6 +507,9 @@ impl Machine {
             vector_writes: RefCell::new(BTreeMap::new()),
             sid_reg_writes: RefCell::new([0; 32]),
             sid_oob_writes: Cell::new(0),
+            play_reads: RefCell::new(BTreeMap::new()),
+            running: Cell::new(false),
+            block: Cell::new((0, 0)),
         }
     }
 }
@@ -508,6 +519,9 @@ impl Bus for Machine {
         let a = usize::from(address);
         if self.trace.get() && (in_range(address, ROM_BASIC) || in_range(address, ROM_KERNAL)) {
             *self.rom_reads.borrow_mut().entry(address).or_insert(0) += 1;
+        }
+        if self.trace.get() && self.running.get() && self.play_reads.borrow().len() < 4000 {
+            *self.play_reads.borrow_mut().entry(address).or_insert(0) += 1;
         }
         match a {
             0xd400..=0xd5ff => self.sid.read(a - 0xd400),
@@ -725,6 +739,8 @@ fn setup(model: Model, loaded: &Loaded, pal: bool, stubs: Stubs) -> Rc<RefCell<M
         );
         let load = usize::from(loaded.load);
         m.ram[load..load + loaded.data.len()].copy_from_slice(&loaded.data);
+        m.block
+            .set((loaded.load, loaded.load + loaded.data.len() as u16));
         write_call_stub(&mut m.ram, stubs.init, loaded.init, stubs.halt);
         if loaded.play != 0 {
             write_play_stub(&mut m.ram, stubs, loaded.play);
@@ -766,6 +782,7 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
     harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.halt;
     harness.trace.init_returned = cpu.pc == stubs.halt;
     harness.trace.phase = Phase::Run;
+    harness.machine.borrow_mut().running.set(true);
     (cpu, harness)
 }
 
@@ -1080,6 +1097,21 @@ fn run() -> Result<(), Box<dyn Error>> {
             v3_ctrl,
             v1_freq,
         );
+        let (b0, b1) = m.block.get();
+        let mut reads: Vec<(u16, u64)> = m
+            .play_reads
+            .borrow()
+            .iter()
+            .map(|(&a, &c)| (a, c))
+            .collect();
+        reads.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
+        for (a, c) in reads.iter().take(12) {
+            let inside = *a >= b0 && *a < b1;
+            println!(
+                "TRACE playread ${a:04X} n={c} in_block={}",
+                u8::from(inside)
+            );
+        }
         for (pc, c) in t.top_v(&t.rom_exec, 5) {
             println!(
                 "TRACE exec ${pc:04X} n={c} zero={}",
