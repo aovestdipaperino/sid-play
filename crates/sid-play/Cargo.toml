@@ -1,0 +1,16 @@
+[package]
+name = "sid-play"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Enzo Lombardi <enzinol@gmail.com>"]
+license = "GPL-2.0-only"
+description = "Play C64 PSID tunes through the mos6581 SID emulator"
+
+[dependencies]
+mos6510 = "0.1"
+mos6581 = { path = "../mos6581", version = "0.1" }
+
+[[bin]]
+name = "render"
+path = "src/main.rs"

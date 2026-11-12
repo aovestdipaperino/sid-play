@@ -6,12 +6,12 @@
 //! footprint to the top of the last page: call stubs, an interrupt handler for
 //! tunes that do not install one, and a halt loop, all above $ffe0.
 //!
-//! `cargo run --release --example render -- tune.sid [--subsong N] [--seconds S]
+//! `cargo run --release -p sid-play --bin render -- tune.sid [--subsong N] [--seconds S]
 //!         [--ntsc] [--probe] [--out file.wav]`
 
 use mos6510::{Bus, Cpu};
-use rust_sid::sink::{SampleFormat, Sink, WavSink, WavSpec};
-use rust_sid::{Model, Sid};
+use mos6581::{Model, Sid};
+use sid_play::sink::{SampleFormat, Sink, WavSink, WavSpec};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -19,7 +19,6 @@ use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-#[path = "render/poweron_table.rs"]
 mod poweron_table;
 
 const RATE: f64 = 44_100.0;

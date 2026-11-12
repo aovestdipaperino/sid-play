@@ -1,4 +1,4 @@
-use rust_sid::envelope::{Adsr, Envelope};
+use mos6581::envelope::{Adsr, Envelope};
 
 const FAST: Adsr = Adsr {
     attack: 0x0,

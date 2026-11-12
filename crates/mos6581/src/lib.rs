@@ -5,7 +5,6 @@ pub mod extfilt;
 pub mod filter;
 pub mod resample;
 pub mod sid;
-pub mod sink;
 pub mod tables;
 pub mod voice;
 pub mod wave;

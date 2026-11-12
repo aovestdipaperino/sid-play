@@ -57,13 +57,15 @@ PSID harness that runs a tune's 6510 code and renders it through the chip to a
 WAV file.
 
 The library is the chip only — no CPU, no memory map, no player. The CPU is the
-`mos6510` crate from crates.io, a dev-dependency used by the example and tests.
+`mos6510` crate from crates.io, a dependency of `sid-play`.
 
 ```
-src/            1929 lines   the chip: wave, envelope, voice, filter, extfilt,
-                             resample, sink, sid, tables (generated)
-tests/          1532 lines   behavioural tests per component + fixture renders
-examples/render.rs ~1200     PSID loader + 6510 harness + trace diagnostics
+crates/mos6581/src/          the chip: wave, envelope, voice, filter, extfilt,
+                             resample, sid, tables (generated)
+crates/mos6581/tests/        behavioural tests per component
+crates/sid-play/src/         sink (WAV) + main.rs: PSID loader, 6510 harness,
+                             trace diagnostics (binary `render`)
+crates/sid-play/tests/       fixture renders (tests/fixtures/*.sid)
 mos6510 (crates.io)          the CPU core, github.com/aovestdipaperino/mos6510
 docs/superpowers/specs/      the design spec
 docs/superpowers/plans/      plan 1 (faithful chip)
@@ -75,10 +77,10 @@ docs/superpowers/plans/      plan 1 (faithful chip)
 `mos6510` comes from crates.io; no sibling checkout is needed.
 
 ```sh
-cargo test
+cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run --release --example render -- tune.sid --seconds 20 --out out.wav
-cargo run --release --example render -- tune.sid --seconds 5 --out /tmp/x.wav --trace
+cargo run --release -p sid-play --bin render -- tune.sid --seconds 20 --out out.wav
+cargo run --release -p sid-play --bin render -- tune.sid --seconds 5 --out /tmp/x.wav --trace
 ```
 
 `--trace` is inert unless passed. It prints one `TRACE heard=...` summary line
@@ -89,7 +91,7 @@ instruction boundaries.
 
 ## What is verified working
 
-The chip itself. Two fixtures in `tests/fixtures/` exercise it end to end:
+The chip itself. Two fixtures in `crates/sid-play/tests/fixtures/` exercise it end to end:
 
 - `scale.sid` — clock-driven; steps a frequency table through a scale.
 - `irq.sid` — installs its own `$FFFE` handler, programs CIA 1 timer A at latch
@@ -148,14 +150,14 @@ The 13 failures are not one findable bug. See the investigation log below.
 
 ## Licensing — hard constraints, do not change casually
 
-- Licence is **`GPL-2.0-only`**, deliberately. `src/tables/wave6581.rs` and
-  `src/tables/wave8580.rs` contain waveform measurement data **byte-identical to
+- Licence is **`GPL-2.0-only`**, deliberately. `crates/mos6581/src/tables/wave6581.rs` and
+  `crates/mos6581/src/tables/wave8580.rs` contain waveform measurement data **byte-identical to
   reSID's `.dat` files** (verified). That data is GPL-2.0 and cannot be
   redistributed under a permissive licence. Re-licensing to MIT would require
   first removing those tables and regenerating them clean-room.
 - Every generated table file carries `Waveform measurement data: reSID (Dag
   Lem), GPL-2.0.` — licence-required attribution. Do not strip it.
-- `examples/render/poweron_table.rs` is derived from libsidplayfp's
+- `crates/sid-play/src/poweron_table.rs` is derived from libsidplayfp's
   `poweron.bin` capture (also GPL-2.0) and is **byte-identical to it across all
   1024 addresses**.
 - The library keeps **zero runtime dependencies**. `mos6510` is a
@@ -170,7 +172,7 @@ stacked P carries `I = 1`, every `RTI` restores interrupts masked, and only one
 interrupt can ever be taken. It also clears I for the handler (hardware leaves
 it set) and pushes B set for a hardware IRQ (B=1 distinguishes BRK).
 
-**Consequence (historical): never call `cpu.irq()`.** `examples/render.rs`
+**Consequence (historical): never call `cpu.irq()`.** `crates/sid-play/src/main.rs`
 performed the interrupt entry by hand (`irq_entry`) using lib6502's public
 `pc`, `sp`, `status` and `cycles` fields. The repo has 0 stars and last saw a
 push in October 2024, so no fix was expected.

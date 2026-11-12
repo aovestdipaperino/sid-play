@@ -1,5 +1,5 @@
-use rust_sid::Model;
-use rust_sid::tables::cutoff_hz;
+use mos6581::tables::cutoff_hz;
+use mos6581::Model;
 
 #[test]
 fn cutoff_spans_the_measured_6581_range() {
@@ -31,7 +31,7 @@ fn cutoff_is_clamped_to_11_bits() {
     assert_eq!(cutoff_hz(Model::Pal, 9999), cutoff_hz(Model::Pal, 2047));
 }
 
-use rust_sid::filter::{
+use mos6581::filter::{
     Filter, ROUTE_VOICE_1, ROUTE_VOICE_3, TAP_HIGH_PASS, TAP_LOW_PASS, TAP_NONE,
 };
 

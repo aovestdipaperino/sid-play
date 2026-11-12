@@ -2,7 +2,7 @@
 """Turn reSID's raw waveform dumps into Rust source.
 
 Reads the eight 4096-byte .dat files from a reSID checkout given as argv[1] and
-writes src/tables/wave6581.rs and src/tables/wave8580.rs.
+writes crates/mos6581/src/tables/wave6581.rs and crates/mos6581/src/tables/wave8580.rs.
 
 The suffixes are the three waveform slots with "_" for an absent one: _ST, P_T,
 PS_, PST. Pure sawtooth, triangle and pulse are generated directly and have no
@@ -12,7 +12,7 @@ import pathlib
 import sys
 
 SRC = pathlib.Path(sys.argv[1])
-OUT = pathlib.Path("src/tables")
+OUT = pathlib.Path("crates/mos6581/src/tables")
 NAMES = ["_ST", "P_T", "PS_", "PST"]
 FIELDS = ["st", "p_t", "ps_", "pst"]
 
@@ -38,4 +38,4 @@ def emit(model: str) -> str:
 
 for model in ("6581", "8580"):
     (OUT / f"wave{model}.rs").write_text(emit(model))
-    print(f"wrote src/tables/wave{model}.rs")
+    print(f"wrote crates/mos6581/src/tables/wave{model}.rs")

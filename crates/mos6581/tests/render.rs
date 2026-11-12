@@ -1,4 +1,4 @@
-use rust_sid::{Model, Sid};
+use mos6581::{Model, Sid};
 
 const RATE: f64 = 44_100.0;
 

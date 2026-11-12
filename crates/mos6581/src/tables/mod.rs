@@ -30,7 +30,7 @@ pub fn for_model(model: crate::Model) -> &'static WaveTables {
     }
 }
 
-pub use fc::{CutoffTable, cutoff_table, cutoff_table_8580};
+pub use fc::{cutoff_table, cutoff_table_8580, CutoffTable};
 
 /// Centre frequency for an 11-bit cutoff value. Values above the register's
 /// range clamp to the top rather than wrapping: a tune that writes past 2047

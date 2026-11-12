@@ -1,6 +1,6 @@
-use rust_sid::Model;
-use rust_sid::tables;
-use rust_sid::wave::{self, Wave};
+use mos6581::tables;
+use mos6581::wave::{self, Wave};
+use mos6581::Model;
 
 fn wave_obj() -> Wave {
     Wave::new(tables::for_model(Model::Pal))
@@ -80,11 +80,9 @@ fn combined_waveforms_come_from_the_measurement_tables() {
 #[test]
 fn the_waveform_is_a_12_bit_value() {
     let mut w = wave_obj();
-    assert!(
-        sweep(&mut w, wave::SAWTOOTH | wave::PULSE, 1500)
-            .iter()
-            .all(|&v| v <= 0x0fff)
-    );
+    assert!(sweep(&mut w, wave::SAWTOOTH | wave::PULSE, 1500)
+        .iter()
+        .all(|&v| v <= 0x0fff));
 }
 
 /// The guard against the or-pattern failure: every selection must reach its own
@@ -366,8 +364,8 @@ fn toggling_test_resets_the_noise_shift_register() {
     );
 }
 
-use rust_sid::envelope::Adsr;
-use rust_sid::voice::{FULL_SCALE, Voice};
+use mos6581::envelope::Adsr;
+use mos6581::voice::{Voice, FULL_SCALE};
 
 fn voice() -> Voice {
     Voice::new(tables::for_model(Model::Pal))

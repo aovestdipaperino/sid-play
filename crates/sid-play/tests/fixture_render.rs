@@ -7,21 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn harness() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for profile in ["debug", "release"] {
-        let candidate = manifest
-            .join("target")
-            .join(profile)
-            .join("examples")
-            .join("render");
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    panic!(
-        "the render example has not been built; run `cargo build --example render` \
-         (or `cargo test`, which builds examples) before this test"
-    );
+    PathBuf::from(env!("CARGO_BIN_EXE_render"))
 }
 
 /// Read a mono PCM16 WAV back into samples.
@@ -31,9 +17,7 @@ fn read_wav(path: &Path) -> Vec<i16> {
     let data_len = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
     let body = &bytes[44..44 + data_len];
     assert_eq!(body.len() % 2, 0, "odd PCM16 length");
-    let (pairs, _) = body.as_chunks::<2>();
-    pairs
-        .iter()
+    body.chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect()
 }
