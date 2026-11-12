@@ -1,8 +1,18 @@
 # rust-sid — handoff notes
 
-Branch `feat/faithful-chip`, HEAD `4aca3eb`. Clean tree, 7 test targets green
-(91 tests), `cargo clippy --workspace --all-targets -- -D warnings` and
-`cargo fmt --check` both clean.
+Branch `feat/faithful-chip`. 7 test targets green (91 tests),
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
+both clean.
+
+> **Update 2026-11-12: the silent-tune problem was the CPU, not the tunes.**
+> `lib6502` 0.2.2 fails Klaus Dormann's 6502 functional test early: `(zp),Y`
+> never adds Y, binary `ADC`/`SBC` never set C/N/V, `SBC` subtracts the carry
+> instead of the borrow, and `PHP`/`BRK` push a corrupted status byte.
+> `examples/render/cpu_fixups.rs` executes those instructions correctly; with it,
+> **16/16 PSIDs play** (previously 3). The CPU still fails the test further on
+> (next: `LSR A` flags at `$230C`), so more defects remain. See "CPU defects"
+> below. Sections further down that say the tunes "decided not to play" are
+> superseded.
 
 ## What this is
 
@@ -17,7 +27,9 @@ The library is the chip only — no CPU, no memory map, no player. `mos6502` and
 src/            1929 lines   the chip: wave, envelope, voice, filter, extfilt,
                              resample, sink, sid, tables (generated)
 tests/          1532 lines   behavioural tests per component + fixture renders
-examples/render.rs ~1150     PSID loader + 6510 harness + trace diagnostics
+examples/render.rs ~1200     PSID loader + 6510 harness + trace diagnostics
+examples/render/cpu_fixups.rs  correct execution of instructions lib6502 breaks
+examples/cpu_conformance.rs    runs Klaus Dormann's functional test on lib6502
 docs/superpowers/specs/      the design spec
 docs/superpowers/plans/      plan 1 (faithful chip)
 .superpowers/sdd/            task briefs, reports, review packages, ledger
@@ -55,7 +67,41 @@ the hand-rolled interrupt entry and the CIA timer.
 Three real tunes render sustained tonal audio: `Action_Biker`, `5_Title_Tunes`,
 `05-09-87` (autocorrelation peaks 0.74–0.99, so tonal rather than noise).
 
+## CPU defects in lib6502 0.2.2
+
+Found with `examples/cpu_conformance.rs` against Klaus Dormann's
+`6502_functional_test.bin` (fetch it from
+github.com/Klaus2m5/6502_65C02_functional_tests, `bin_files/`; success trap is
+`$3469` for that build):
+
+```sh
+cargo run --release --example cpu_conformance -- 6502_functional_test.bin 3469
+PATCH=1 cargo run --release --example cpu_conformance -- 6502_functional_test.bin 3469
+```
+
+Without `PATCH` it traps at `$0674`; with it, at `$230C`. Worked around so far:
+
+| Defect | Effect on tunes |
+|---|---|
+| `(zp),Y` ignores Y (`addressing.rs`, `IndirectIndexed`) | every pattern/instrument fetch reads the wrong byte |
+| `(zp,X)` does not wrap in the zero page | wrong pointer near `$FF` |
+| `ADC`/`SBC` binary mode never set C, N, V on NMOS/CMOS (only the NES branch does); `ADC` never clears Z | every 16-bit add and every compare-by-subtract breaks |
+| `SBC` subtracts C instead of the borrow `1 - C` | off-by-one in every subtraction |
+| `PHP` ORs `get_flag(..) as u8` (0/1) in, setting Carry instead of B/bit 5, then clears B/bit 5 in P | `PHP`/`PLP` corrupts carry |
+| `BRK` pushes P without bit 5 | minor |
+| Every undocumented opcode (`LAX`, `SAX`, `DCP`, ...) is an empty stub | none in this corpus (trace shows 0) |
+
+Not yet worked around: whatever lies past `$230C` (shift/rotate flags first).
+`clock()` also calls `disassemble_instruction_at` on every instruction, which
+allocates a `String` and reads the operand bytes through the bus.
+
+The renderer applies the fixups unless `NO_FIXUPS` is set, which keeps the old
+behaviour available for A/B comparison.
+
 ## What does not work — the honest coverage number
+
+*Superseded by the update above: with the CPU fixups, 16/16 PSIDs render tonal
+audio (autocorrelation medians 0.41–0.88). Kept for the record.*
 
 From 24 tunes sampled from HVSC (six composers):
 
@@ -110,6 +156,7 @@ these are eliminated:
 | `init` does not finish | Returns successfully for **16/16** |
 | Note data reads as untouched RAM | Failing tune reads its **own in-block tables** (`$5396-$539E`) |
 | Tunes execute undocumented opcodes, which `lib6502` 0.2.2 stubs as no-ops | **0** executions across all 16 (`TRACE stubbed`; positive control with `LDA #` flagged caught 1584) |
+| **The CPU executes documented instructions wrong** | **Confirmed.** Conformance test fails; fixing `(zp),Y`, `ADC`/`SBC`, `PHP`, `BRK` makes 16/16 play |
 
 Two traps worth recording, because they nearly produced false conclusions:
 
@@ -169,6 +216,19 @@ From the review ledger (`.superpowers/sdd/progress.md`), none blocking:
   user-visible change from earlier behaviour.
 
 ## Next steps, ranked
+
+*Revised 2026-11-12, replacing the list kept below for the record:*
+
+1. **Replace `lib6502`.** Patching it instruction by instruction is whack-a-mole
+   and the conformance test still fails. Either write an NMOS 6510 core in the
+   harness (small, and it gives exact cycles, correct IRQ entry and the
+   undocumented opcodes) or adopt a crate that passes Klaus Dormann's functional
+   and decimal tests. The acceptance gate is that test passing, plus the corpus.
+2. Re-check `Axel_F` (0.41) and `Ark_Pandora` (0.47), the least tonal renders,
+   once the CPU passes the test.
+3. Report the defects upstream on lib6502 issue #4 or a new issue.
+
+*Original list:*
 
 1. **Stop, and document the limit.** The chip is verified; the demo plays some
    tunes. Write the coverage honestly into the README and ship it as an emulator

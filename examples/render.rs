@@ -21,6 +21,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[path = "render/cpu_fixups.rs"]
+mod cpu_fixups;
 #[path = "render/poweron_table.rs"]
 mod poweron_table;
 
@@ -931,6 +933,11 @@ impl Harness {
             }
         }
 
+        // lib6502 gets several core instructions wrong; see cpu_fixups.rs.
+        // NO_FIXUPS reverts to the crate's own behaviour, for A/B comparison.
+        if cpu.cycles == 0 && std::env::var_os("NO_FIXUPS").is_none() {
+            cpu_fixups::step(cpu);
+        }
         cpu.clock();
         self.machine
             .borrow_mut()
