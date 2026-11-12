@@ -6,6 +6,9 @@ rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "MIT OR Apache-2.0"
 description = "MOS 6581 SID chip emulator, stepped one Φ2 cycle at a time"
+readme = "README.md"
+keywords = ["sid", "6581", "c64", "emulator", "chiptune"]
+categories = ["emulators", "multimedia::audio"]
 
 [dependencies]
 sid-gpl-data = { path = "../sid-gpl-data", version = "0.1", optional = true }

@@ -1,6 +1,6 @@
 /target
 *.wav
 *.sid
-!tests/fixtures/*.sid
+!crates/sid-play/tests/fixtures/*.sid
 data/*
 !data/.gitkeep

@@ -1,6 +1,6 @@
 # mos6581
 
-A cycle-exact MOS 6581 SID chip emulator in Rust. The chip is stepped one Φ2
+A cycle-stepped MOS 6581 SID chip emulator in Rust. The chip is stepped one Φ2
 cycle at a time and has no runtime dependencies in the default build. It is only
 the chip: no CPU, no memory map, no player. See `sid-play` for a PSID player built
 on it.
@@ -24,6 +24,8 @@ ways:
 Building with `--features gpl-data` swaps in measured tables and constants from
 the `sid-gpl-data` crate (reSID data, GPL-2.0). That makes the resulting build
 GPL-2.0, so the combined work must be distributed under the GPL.
+
+Libraries should never enable `gpl-data`; leave the choice to the final binary. Cargo unifies features, so one dependency enabling it makes the whole program GPL-2.0.
 
 How far the default build is from the measured one:
 

@@ -6,6 +6,11 @@ rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "MIT OR Apache-2.0"
 description = "Play C64 PSID tunes through the mos6581 SID emulator"
+readme = "README.md"
+keywords = ["sid", "psid", "c64", "player", "chiptune"]
+categories = ["emulators", "multimedia::audio"]
+# The scripts only work inside the workspace (they build both configs from its root).
+exclude = ["scripts/"]
 
 [dependencies]
 mos6510 = "0.1"

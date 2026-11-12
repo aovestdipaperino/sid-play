@@ -48,11 +48,10 @@ fn attack_is_a_whole_number_of_rate_periods_and_slower_at_higher_nibbles() {
     }
 }
 
-// Pins the measured rate periods, so it needs the borrowed data.
-#[cfg(feature = "gpl-data")]
+// Checks the code against whichever rate periods the build uses.
 #[test]
-fn attack_takes_255_steps_of_the_measured_rate_period() {
-    use sid_gpl_data::ENV_RATE_PERIOD;
+fn attack_takes_255_steps_of_the_active_rate_period() {
+    use mos6581::chip_data::ENV_RATE_PERIOD;
     for nibble in [0u8, 1, 0xf] {
         let period = u64::from(ENV_RATE_PERIOD[usize::from(nibble)]);
         assert_eq!(attack_cycles(nibble), 255 * period, "nibble {nibble}");
@@ -83,11 +82,11 @@ fn a_falling_sweep_is_slower_than_the_same_rate_attack() {
     assert!(release_cycles(1) > attack_cycles(1));
 }
 
-// Pins the measured divider breakpoints, so it needs the borrowed data.
-#[cfg(feature = "gpl-data")]
+// Checks the code against whichever breakpoints the build uses. The lookup is
+// by level, so the order the table lists them in does not matter.
 #[test]
 fn a_falling_sweep_takes_the_rate_periods_the_breakpoints_imply() {
-    use sid_gpl_data::{ENV_EXPONENTIAL_BREAKPOINTS, ENV_RATE_PERIOD};
+    use mos6581::chip_data::{ENV_EXPONENTIAL_BREAKPOINTS, ENV_RATE_PERIOD};
     // The divider loads at each breakpoint level and holds until the next.
     let mut divider = 1u64;
     let mut periods = 0u64;
@@ -268,11 +267,10 @@ fn rewriting_the_rate_register_to_a_faster_rate_delays_the_step() {
     assert!(cycles > 10_000, "step came after only {cycles} cycles");
 }
 
-// The exact cycle count depends on the borrowed period and wrap constants.
-#[cfg(feature = "gpl-data")]
+// The exact cycle count follows the active period and wrap constants.
 #[test]
 fn the_delayed_step_lands_on_the_counter_wrap_plus_the_new_period() {
-    use sid_gpl_data::{ENV_RATE_COUNTER_SKIPS_ZERO, ENV_RATE_PERIOD};
+    use mos6581::chip_data::{ENV_RATE_COUNTER_SKIPS_ZERO, ENV_RATE_PERIOD};
     let slow = Adsr {
         attack: 0xf,
         ..Adsr::default()

@@ -161,14 +161,11 @@ fn all_taps_off_leaves_no_signal_on_a_routed_voice() {
         ac_rms(tail)
     );
     let mean = tail.iter().sum::<f64>() / tail.len() as f64;
-    // What the bypass leaves behind is the mixer's own DC term, a borrowed value.
-    #[cfg(feature = "gpl-data")]
+    // What the bypass leaves behind is the mixer's own DC term, at full volume.
     assert!(
-        (mean - sid_gpl_data::MIXER_DC).abs() < 1e-9,
+        (mean - mos6581::chip_data::MIXER_DC).abs() < 1e-9,
         "the mixer DC is not what the bypass leaves behind: {mean}"
     );
-    #[cfg(not(feature = "gpl-data"))]
-    assert!(mean.is_finite());
 }
 
 #[test]

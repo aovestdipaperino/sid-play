@@ -1,4 +1,4 @@
-//! Measured waveform tables. Every table here is a *combination* of waveforms:
+//! Combined-waveform tables (built-in, or measured with `gpl-data`). Every table here is a *combination* of waveforms:
 //! pure sawtooth, triangle, pulse and noise are generated directly and have no
 //! table, because the hardware only needs a measurement where the output bits
 //! interact with each other through the resistor network.

@@ -1,4 +1,6 @@
 //! SID chip constants: reSID (Dag Lem), GPL-2.0. See docs/provenance.md.
+//! Upstream copyright notice: see the "NOTICE / upstream copyright" section of
+//! this crate's README.md.
 
 /// Envelope rate-counter period per ADSR nibble.
 pub const ENV_RATE_PERIOD: [u16; 16] = [

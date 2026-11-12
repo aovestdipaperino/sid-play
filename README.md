@@ -9,3 +9,6 @@ A MOS 6581 SID chip emulator in Rust, one update per Φ2 cycle, split into three
 
 The default build is GPL-free and approximates the combined waveforms and the filter
 cutoff; see `docs/provenance.md` and `HANDSOFF.md` for the audit and the fidelity gap.
+
+Our own `tools/` and `docs/` are MIT OR Apache-2.0; `tools/gen_tables.py` and
+`tools/gen_poweron.py` only read the GPL inputs at run time and embed none of them.

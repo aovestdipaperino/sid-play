@@ -2,6 +2,8 @@
 //!
 //! Filter cutoff measurement points: reSID (Dag Lem), GPL-2.0. The point
 //! tables below match reSID's `f0_points_6581` and `f0_points_8580`.
+//! Upstream copyright notice: see the "NOTICE / upstream copyright" section of
+//! this crate's README.md.
 
 /// 6581 cutoff curve points, including the step at register 1024.
 pub const CUTOFF_POINTS_6581: &[(u32, f64)] = &[

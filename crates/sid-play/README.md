@@ -30,9 +30,12 @@ Building with `--features gpl-data` uses measured reSID tables and the
 libsidplayfp power-on pattern from the `sid-gpl-data` crate. A build with that
 feature is GPL-2.0.
 
+Libraries should never enable `gpl-data`; leave the choice to the final binary. Cargo unifies features, so one dependency enabling it makes the whole program GPL-2.0.
+
 ## Fidelity gap on real tunes
 
-`scripts/fidelity-gap.sh tune.sid...` renders each tune for 10 s with both builds
+`scripts/fidelity-gap.sh tune.sid...` (in the workspace checkout only; it is
+not shipped in the published crate) renders each tune for 10 s with both builds
 and prints the tonality (median autocorrelation peak; 0.00 is silence, higher is
 more tonal) of each, plus the RMS of the difference between the two renders as a
 fraction of full scale.

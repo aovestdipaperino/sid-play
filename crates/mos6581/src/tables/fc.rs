@@ -102,8 +102,9 @@ pub fn cutoff_table(model: crate::Model) -> &'static CutoffTable {
     }
 }
 
-/// The 8580 curve. Kept because the data is vendored and the linear response is
-/// a useful reference, but nothing in the chip path selects it yet.
+/// The 8580 curve: the measured 8580 points with `gpl-data`, the built-in
+/// linear curve (the same one the 6581 uses) without it. Kept as a reference;
+/// nothing in the chip path selects it yet.
 pub fn cutoff_table_8580() -> &'static CutoffTable {
     CUTOFF_8580.get_or_init(|| build(POINTS_8580))
 }

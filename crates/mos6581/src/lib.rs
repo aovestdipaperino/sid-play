@@ -1,6 +1,13 @@
 //! MOS 6581 SID, emulated one step per Φ2 cycle.
+//!
+//! The default build is GPL-free (MIT OR Apache-2.0). The off-by-default
+//! `gpl-data` feature swaps in measured reSID data and makes the build GPL-2.0.
+//! Libraries should never enable `gpl-data`; leave the choice to the final
+//! binary. Cargo unifies features, so one dependency enabling it makes the whole
+//! program GPL-2.0.
 
-mod chip_data;
+#[doc(hidden)]
+pub mod chip_data;
 #[cfg(not(feature = "gpl-data"))]
 mod clean_chip_data;
 pub mod envelope;

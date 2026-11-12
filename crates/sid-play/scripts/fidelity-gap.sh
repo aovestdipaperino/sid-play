@@ -2,6 +2,8 @@
 # Render each tune with the default (GPL-free) build and the gpl-data build and
 # print the tonality median of each and the rms-diff (RMS of the sample difference
 # between the two renders over full scale). Usage: fidelity-gap.sh tune.sid...
+# Works only from a checkout of the rust-sid workspace: it builds both configs
+# from the workspace root, so scripts/ is excluded from the published crate.
 set -eu
 cd "$(dirname "$0")/../../.."
 out=$(mktemp -d)

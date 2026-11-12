@@ -33,7 +33,7 @@
 /// 2 ms, 8 ms, 16 ms, 24 ms, 38 ms, 56 ms, 68 ms, 80 ms, 100 ms, 250 ms,
 /// 500 ms, 800 ms, 1 s, 3 s, 5 s, 8 s, "from zero to peak".
 /// Derivation: attack is 255 linear steps, so period = round(t_attack * 1 MHz / 255).
-pub(crate) const ENV_RATE_PERIOD: [u16; 16] = [
+pub const ENV_RATE_PERIOD: [u16; 16] = [
     8, 31, 63, 94, 149, 220, 267, 314, 392, 980, 1961, 3137, 3922, 11765, 19608, 31373,
 ];
 
@@ -51,7 +51,7 @@ pub(crate) const ENV_RATE_PERIOD: [u16; 16] = [
 /// 255 periods of a full attack, matching the datasheet's 3x ratio.
 /// The (0, 1) entry resets the divider to 1 when the envelope reaches 0, so a
 /// following attack and the next decay start from an undivided clock.
-pub(crate) const ENV_EXPONENTIAL_BREAKPOINTS: &[(u8, u16)] = &[
+pub const ENV_EXPONENTIAL_BREAKPOINTS: &[(u8, u16)] = &[
     (255, 1),
     (104, 2),
     (52, 4),
@@ -67,7 +67,7 @@ pub(crate) const ENV_EXPONENTIAL_BREAKPOINTS: &[(u8, u16)] = &[
 /// counter's wrap behaviour. A plain binary counter wraps through 0, so this is
 /// `false`; the value only matters when a period smaller than the current count
 /// is written and the counter must run the full 2^15 cycle.
-pub(crate) const ENV_RATE_COUNTER_SKIPS_ZERO: bool = false;
+pub const ENV_RATE_COUNTER_SKIPS_ZERO: bool = false;
 
 /// Output-stage low-pass corner, rad/s.
 ///
@@ -78,7 +78,7 @@ pub(crate) const ENV_RATE_COUNTER_SKIPS_ZERO: bool = false;
 /// w0 * DT = 0.1 per step, run at the real PAL Φ2 (1.015 us per step), gives an
 /// effective corner of -ln(0.9) / 1.015e-6 = about 1.04e5 rad/s, ~4 % high, which
 /// is inaudible at 16 kHz.
-pub(crate) const EXTFILT_W0_LOW: f64 = 1.0e5;
+pub const EXTFILT_W0_LOW: f64 = 1.0e5;
 
 /// Output-stage high-pass corner, rad/s.
 ///
@@ -89,7 +89,7 @@ pub(crate) const EXTFILT_W0_LOW: f64 = 1.0e5;
 /// Derivation: w0 = 1 / (R C) = 1 / (1e3 * 1e-5) = 100 rad/s (about 15.9 Hz).
 /// w0 * DT = 1e-4, so Euler error is negligible; the DT vs real Φ2 mismatch
 /// (1.5 % PAL, 2.2 % NTSC) only shifts the corner by that fraction.
-pub(crate) const EXTFILT_W0_HIGH: f64 = 100.0;
+pub const EXTFILT_W0_HIGH: f64 = 100.0;
 
 /// Q at resonance register 0.
 ///
@@ -97,7 +97,7 @@ pub(crate) const EXTFILT_W0_HIGH: f64 = 100.0;
 /// linearly from no resonance (0) to maximum resonance (15)".
 /// Rationale (own choice of range): "no resonance" is taken as the Butterworth
 /// value 1/sqrt(2), the highest Q with no response peak.
-pub(crate) const FILTER_Q_MIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
+pub const FILTER_Q_MIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
 
 /// Resonance register steps per unit of Q.
 ///
@@ -107,7 +107,7 @@ pub(crate) const FILTER_Q_MIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
 /// Rationale (own choice of range): with 8 steps per unit of Q, res = 15 gives
 /// Q = 0.707 + 1.875 = 2.58, a peak of about +8 dB, a moderate maximum
 /// consistent with Yannes' description of a weak resonance.
-pub(crate) const FILTER_Q_STEPS: f64 = 8.0;
+pub const FILTER_Q_STEPS: f64 = 8.0;
 
 /// DC term added to the routed voice sum before the master volume.
 ///
@@ -124,7 +124,7 @@ pub(crate) const FILTER_Q_STEPS: f64 = 8.0;
 /// followed by a 1/3 mix scale and the output-stage high-pass. Consequence: a
 /// large volume step produces an audible click (real 6581s click too). The
 /// value is a tunable to be checked by ear, not a measurement.
-pub(crate) const MIXER_DC: f64 = 0.5;
+pub const MIXER_DC: f64 = 0.5;
 
 /// Waveform DAC value that represents zero signal.
 ///
@@ -132,21 +132,21 @@ pub(crate) const MIXER_DC: f64 = 0.5;
 /// datasheet, 12-bit waveform outputs). Rationale: an ideal-model centred DAC
 /// (real DAC non-linearity and offset are not modelled); 2048 is the
 /// midpoint code, so sawtooth, triangle and pulse at 50 % swing symmetrically.
-pub(crate) const VOICE_WAVE_ZERO: i32 = 2048;
+pub const VOICE_WAVE_ZERO: i32 = 2048;
 
 /// DC offset of a voice's output, in units of wave x level.
 ///
 /// Source: unsourced own choice. Rationale: with a centred DAC the voice adds
 /// no DC of its own; the DC that makes volume-register playback work is
 /// modelled once, in the mixer (`MIXER_DC`), rather than per voice.
-pub(crate) const VOICE_DC: i32 = 0;
+pub const VOICE_DC: i32 = 0;
 
 /// Noise LFSR bits wired to waveform output bits 11, 10, ..., 4.
 ///
 /// Source: <https://www.oxyron.de/html/registers_sid.html>: "The 8 bits of the
 /// noise waveform are assembled from bits 20, 18, 14, 11, 9, 5, 2 and 0".
 /// Derivation: listed high to low and mapped to the top 8 of the 12 output bits.
-pub(crate) const NOISE_OUTPUT_TAPS: [u8; 8] = [20, 18, 14, 11, 9, 5, 2, 0];
+pub const NOISE_OUTPUT_TAPS: [u8; 8] = [20, 18, 14, 11, 9, 5, 2, 0];
 
 /// Phase accumulator bit whose rising edge shifts the noise LFSR.
 ///
@@ -165,14 +165,14 @@ pub(crate) const NOISE_OUTPUT_TAPS: [u8; 8] = [20, 18, 14, 11, 9, 5, 2, 0];
 /// about 3.9 kHz and so cannot give hissing white noise; it was read as "scales
 /// with" the oscillator frequency, which every accumulator bit satisfies, and
 /// Yannes' "intermediate bit" was given precedence.
-pub(crate) const NOISE_CLOCK_BIT: u8 = 19;
+pub const NOISE_CLOCK_BIT: u8 = 19;
 
 /// Noise LFSR value after reset and after TEST is released.
 ///
 /// Source: unsourced own choice. Rationale: with XOR feedback only the
 /// all-zero state locks up; all ones (0x7F_FFFF, 23 bits) is a valid,
 /// maximally distant-from-lockup seed.
-pub(crate) const NOISE_SHIFT_RELOAD: u32 = 0x7F_FFFF;
+pub const NOISE_SHIFT_RELOAD: u32 = 0x7F_FFFF;
 
 #[cfg(test)]
 #[allow(clippy::assertions_on_constants)] // the tests check the constants themselves

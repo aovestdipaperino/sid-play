@@ -1,7 +1,7 @@
 # rust-sid - handoff notes
 
 Branch `feat/faithful-chip`. `cargo test --workspace` passes: 13 test targets,
-99 tests (default build). `cargo test --workspace --features sid-play/gpl-data`
+102 tests (default build). `cargo test --workspace --features sid-play/gpl-data`
 passes: the same 13 targets, 97 tests (some tests exist in one configuration
 only). `cargo clippy --workspace --all-targets -- -D warnings` (both
 configurations) and `cargo fmt --check` are clean.
@@ -342,6 +342,8 @@ From the review ledger (`.superpowers/sdd/progress.md`), none blocking:
    locally) for a few tunes.
 3. RSID support needs the ROMs and a fuller machine; still out of scope.
 4. Widen the corpus beyond six composers.
+5. Follow-up: listening check of `$D418`-sample tunes in the default build
+   (MIXER_DC is an untuned own choice).
 
 *Historical (written before the CPU cause was found; the first list above
 supersedes it):*

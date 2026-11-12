@@ -6,3 +6,6 @@ rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "GPL-2.0-only"
 description = "GPL-2.0 measurement data borrowed by the mos6581 and sid-play crates, kept apart so it can be replaced"
+readme = "README.md"
+keywords = ["sid", "6581", "c64", "resid", "emulator"]
+categories = ["emulators", "multimedia::audio"]

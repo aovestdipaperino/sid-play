@@ -410,11 +410,10 @@ fn an_ungated_voice_carries_the_dc_and_no_signal() {
             "an ungated voice is generating a signal"
         );
     }
-    // The DC term is a borrowed value, so its size is only checked with the data.
-    #[cfg(feature = "gpl-data")]
+    // At level 0 the voice sits exactly at the active DC term.
     assert_eq!(
         first,
-        sid_gpl_data::VOICE_DC,
+        mos6581::chip_data::VOICE_DC,
         "idle voice is not sitting at the DC term"
     );
 }

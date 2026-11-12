@@ -37,8 +37,9 @@ impl ExtFilter {
     }
 
     /// Turning the stage off bypasses the low-pass only. The high-pass keeps
-    /// running, because it is what makes an idle voice inaudible: every voice
-    /// carries DC at every envelope level, and nothing upstream removes it.
+    /// running, because it is what removes any steady offset the chip hands
+    /// over (the voice and mixer DC terms from `chip_data`); nothing upstream
+    /// removes it.
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
     }
@@ -143,19 +144,19 @@ mod tests {
 
     #[test]
     fn the_stage_removes_the_dc_a_quiet_chip_sits_on() {
-        // Three idle voices each carry half a voice of DC, which is what the
-        // mixer hands this stage in the normal case.
+        // An arbitrary steady offset under a tone: whatever DC the chip hands
+        // this stage, the high-pass must remove it.
         let mut f = ExtFilter::new();
         let mut last = 0.0f64;
         for i in 0..2_000_000 {
-            let s = 1.5 + (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / CLOCK).sin();
+            let s = 2.0 + (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / CLOCK).sin();
             f.clock(s);
             last = f.output();
         }
         let centred = last - (2.0 * std::f64::consts::PI * 1000.0 * 1_999_999.0 / CLOCK).sin();
         assert!(
             centred.abs() < 5e-2,
-            "the 1.5 DC offset survived: {centred}"
+            "the 2.0 DC offset survived: {centred}"
         );
     }
 
