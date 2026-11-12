@@ -10,18 +10,18 @@ checksum = "9612d313617edd0a032e922a09cdc9ba7492bc373b357b745b2c166ae0a00fbd"
 
 [[package]]
 name = "mos6581"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b8510e380216d417356ca3d35dc2ff2c39e4663c74e73e032b44376fcedeb7a"
+checksum = "c9732bd041e6ad9dc176b08649e50e907704b4a0a9e7f0c27d142f62fbe815bf"
 dependencies = [
  "sid-gpl-data",
 ]
 
 [[package]]
 name = "sid-gpl-data"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67c0da17664e4c25400239b558d0024abeb226e1cef4908b8e640625ddfc8d23"
+checksum = "38d5a00e5a4ed8128d6c45ddbaa103b74113a28483a49a0a448fe61def23d096"
 
 [[package]]
 name = "sid-play"
