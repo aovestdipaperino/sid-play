@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/mos6581", "crates/sid-play", "crates/sid-gpl-data"]
+members = ["crates/sid-play"]
 resolver = "3"
 
 [workspace.package]

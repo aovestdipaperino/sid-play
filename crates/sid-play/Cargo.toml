@@ -1,6 +1,6 @@
 [package]
 name = "sid-play"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
@@ -15,8 +15,8 @@ exclude = ["scripts/"]
 
 [dependencies]
 mos6510 = "0.1"
-mos6581 = { path = "../mos6581", version = "0.1" }
-sid-gpl-data = { path = "../sid-gpl-data", version = "0.1", optional = true }
+mos6581 = "0.1"
+sid-gpl-data = { version = "0.1", optional = true }
 
 [features]
 default = []

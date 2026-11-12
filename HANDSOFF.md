@@ -6,6 +6,14 @@ passes: the same 13 targets, 97 tests (some tests exist in one configuration
 only). `cargo clippy --workspace --all-targets -- -D warnings` (both
 configurations) and `cargo fmt --check` are clean.
 
+> **Update 2026-11-12, repository split:** `mos6581` and `sid-gpl-data` now live in
+> their own repositories ([mos6581](https://github.com/aovestdipaperino/mos6581),
+> [sid-gpl-data](https://github.com/aovestdipaperino/sid-gpl-data)), together with
+> `docs/provenance.md` (in mos6581) and the data generators in `tools/` (in
+> sid-gpl-data). This repository keeps only the player, which takes both from
+> crates.io. Paths below that start with `crates/mos6581` or `crates/sid-gpl-data`
+> refer to those repositories' roots.
+
 > **Update 2026-11-12 (gpl-data build, measured before the crate split): the silent-tune problem was the CPU, not the tunes.**
 > `lib6502` was the cause. It has been replaced by the crate
 > [`mos6510`](https://crates.io/crates/mos6510) 0.1 (cycle-exact NMOS 6510, MIT OR Apache-2.0, passes Tom Harte's

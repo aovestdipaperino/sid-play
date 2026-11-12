@@ -19,11 +19,13 @@ cargo run --release -p sid-play --bin render -- tune.sid --seconds 60 --out tune
 
 ## The crates
 
+Three crates in three repositories, all on crates.io:
+
 | | Crate | What it is | Licence |
 |---|---|---|---|
-| <img src="crates/mos6581/assets/logo.svg" width="120"> | [`mos6581`](crates/mos6581) | The SID chip: oscillators, envelopes, filter, output stage, resampler. Stepped once per Φ2 cycle. | MIT OR Apache-2.0 |
+| <img src="https://raw.githubusercontent.com/aovestdipaperino/mos6581/main/assets/logo.svg" width="120"> | [`mos6581`](https://github.com/aovestdipaperino/mos6581) | The SID chip: oscillators, envelopes, filter, output stage, resampler. Stepped once per Φ2 cycle. | MIT OR Apache-2.0 |
 | <img src="crates/sid-play/assets/logo.svg" width="120"> | [`sid-play`](crates/sid-play) | The player: PSID loader, a minimal C64 around the tune (CIA timer, memory, call stubs), the `render` binary and a WAV writer. | MIT OR Apache-2.0 |
-| <img src="crates/sid-gpl-data/assets/logo.svg" width="120"> | [`sid-gpl-data`](crates/sid-gpl-data) | Borrowed measurement data, kept in a jar. Used only if you ask for it. | GPL-2.0-only |
+| <img src="https://raw.githubusercontent.com/aovestdipaperino/sid-gpl-data/main/assets/logo.svg" width="120"> | [`sid-gpl-data`](https://github.com/aovestdipaperino/sid-gpl-data) | Borrowed measurement data, kept in a jar. Used only if you ask for it. | GPL-2.0-only |
 
 The CPU is a separate project: [`mos6510`](https://github.com/aovestdipaperino/mos6510)
 ([crates.io](https://crates.io/crates/mos6510)), a cycle-exact 6510 that passes
@@ -39,7 +41,7 @@ flag in binary `ADC`. Replacing that CPU with `mos6510` made all 16 play.
 
 With the music working, the licence was the next problem. One GPL table makes
 the whole crate GPL. So every source file went through a provenance audit
-(recorded in [`docs/provenance.md`](docs/provenance.md)): each table, constant
+(recorded in [`docs/provenance.md`](https://github.com/aovestdipaperino/mos6581/blob/main/docs/provenance.md)): each table, constant
 and formula was traced to a public source, an own derivation, or a GPL origin.
 Everything with a GPL origin moved into `sid-gpl-data`. The values the chip
 cannot run without were then written again from public sources only (the MOS
@@ -79,7 +81,7 @@ fixtures, every tune plays in the default build, with tonality medians from
   the DC levels are clean-room values, so they sound close but not identical.
 
 The full list is in the "Known default-build fidelity gaps" section of
-[`docs/provenance.md`](docs/provenance.md), and the per-tune numbers are in
+[`docs/provenance.md`](https://github.com/aovestdipaperino/mos6581/blob/main/docs/provenance.md), and the per-tune numbers are in
 [`HANDSOFF.md`](HANDSOFF.md).
 
 ## Where it is going
@@ -110,6 +112,5 @@ public sources the clean-room values cite.
 ## Licence
 
 `mos6581` and `sid-play`: MIT OR Apache-2.0, at your option. `sid-gpl-data`:
-GPL-2.0-only. Our own `tools/` and `docs/` are MIT OR Apache-2.0;
-`tools/gen_tables.py` and `tools/gen_poweron.py` read the GPL inputs at run
-time and embed none of them.
+GPL-2.0-only. Each lives in its own repository; this one holds the player and
+its documents, which are MIT OR Apache-2.0.
