@@ -19,7 +19,7 @@
 - `M` = `/Users/enzo/Code/chipsynth64/mos6581`
 - `P` = `/Users/enzo/Code/chipsynth64/sid-play`
 - `G` = `/Users/enzo/Code/chipsynth64/sid-gpl-data`
-- `S` = `/private/tmp/claude-501/-Users-enzo-Code-chipsynth64-rust-sid/6b98fda9-0513-49a9-a538-f633ef74c096/scratchpad`, for the private evaluator and the clean-room scratch crates.
+- `S` = a private scratch directory outside the repositories, for the private evaluator and the clean-room scratch crates.
 
 ## Global Constraints
 
@@ -205,7 +205,7 @@ mos6581 = { path = "../mos6581" }
 - [ ] **Step 2: Corpus.** The directory is git-ignored.
 
 ```bash
-cd P && for n in 05-09-87 4_Soccer_Sims_Soccer_Skills 5_Title_Tunes 64_Dwarfs_on_XTC 720_Degrees Acceleration-mix ACE_II Action_Biker All_Points_Bulletin All_Terrain_Vehicle_Simulator Alternative_World_Games Antics Ark_Pandora Artura Athena Axel_F; do cp /private/tmp/corpus/$n.sid data/; done && cp ../last_ninja.sid data/ && ls data/*.sid | wc -l
+cd P && for n in 05-09-87 4_Soccer_Sims_Soccer_Skills 5_Title_Tunes 64_Dwarfs_on_XTC 720_Degrees Acceleration-mix ACE_II Action_Biker All_Points_Bulletin All_Terrain_Vehicle_Simulator Alternative_World_Games Antics Ark_Pandora Artura Athena Axel_F; do cp the local corpus directory/$n.sid data/; done && cp ../last_ninja.sid data/ && ls data/*.sid | wc -l
 ```
 Expected: `17`.
 
@@ -298,213 +298,13 @@ Expected: all tests pass, and the three files report `OK`.
 
 ### Task 3: Private evaluator (controller only, never committed)
 
-**Files:**
-- Create: `S/gpl-eval/Cargo.toml`, `S/gpl-eval/src/main.rs`, `S/gpl-eval/eval.sh`, `S/gpl-eval/wavs.py`, `S/gpl-eval/tonality.py` (copied from `P/crates/sid-play/scripts/tonality.py`)
+The controller builds a private evaluator in `S`, outside every repository. Nothing of it is committed, and neither its code nor its scratch paths appear in a public repository.
 
-**Interfaces:**
-- Consumes: Task 1 and 2 seams.
-- Produces: `sh S/gpl-eval/eval.sh cutoff|waves|poweron [--verbose]`, which prints `metric: PASS|FAIL` lines. `--verbose` adds the numbers, for the controller only.
+For each item (cutoff, waves, poweron) it compares the clean candidate with the measured data side by side and scores named metrics. The metrics cover, for the cutoff, the closed corner, the median log2 error over the register range, the rms level of the `scale` fixture, and a "better than today" verdict against the current default. For the waves they are, per table, the rms error against the measured table relative to the AND baseline (`rms_40pct_below_and`, `not_worse_than_and`), plus `pst_differs_from_st`. For the power-on image they are `bytes_90pct_match` and `tonality_all_within_0.05` over the corpus.
 
-- [ ] **Step 1: `S/gpl-eval/Cargo.toml`**
+Later tasks invoke it as `sh S/gpl-eval/eval.sh cutoff|waves|poweron [--verbose]`. It prints only `metric: PASS|FAIL` lines. A `--verbose` flag adds the numbers for the controller's own use; they are never shown to the clean-room authors and never written to a public file except where a later task records a published summary figure in `docs/provenance.md`.
 
-```toml
-[package]
-name = "gpl-eval"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[dependencies]
-mos6581 = { path = "/Users/enzo/Code/chipsynth64/mos6581", features = ["gpl-data"] }
-sid-play = { path = "/Users/enzo/Code/chipsynth64/sid-play/crates/sid-play", features = ["gpl-data"] }
-sid-gpl-data = "0.1"
-
-[patch.crates-io]
-mos6581 = { path = "/Users/enzo/Code/chipsynth64/mos6581" }
-
-[workspace]
-```
-
-- [ ] **Step 2: `S/gpl-eval/src/main.rs`**
-
-```rust
-//! Private evaluator: scores the clean-room models against the measured GPL data.
-//! Prints PASS/FAIL per metric; `--verbose` adds numbers for the controller only.
-
-use mos6581::{Model, tables};
-
-struct Out {
-    verbose: bool,
-}
-
-impl Out {
-    fn verdict(&self, name: &str, ok: bool, detail: &str) {
-        println!("{name}: {}", if ok { "PASS" } else { "FAIL" });
-        if self.verbose && !detail.is_empty() {
-            println!("    {detail}");
-        }
-    }
-}
-
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(f64::total_cmp);
-    let n = v.len();
-    if n % 2 == 0 { (v[n / 2 - 1] + v[n / 2]) / 2.0 } else { v[n / 2] }
-}
-
-fn cutoff(o: &Out) {
-    let measured = &tables::cutoff_table(Model::Pal).f0; // gpl-data build: measured
-    let clean = &tables::default::clean_cutoff_table().f0;
-    let today: Vec<f64> = (0..2048).map(|i| 30.0 + (12_000.0 - 30.0) * f64::from(i) / 2047.0).collect();
-    let corner = |c: f64| {
-        let r = c / measured[0];
-        r.max(1.0 / r)
-    };
-    let med = |c: &[f64]| median((0..2048).map(|i| (c[i] / measured[i]).log2().abs()).collect());
-    let (cc, ct) = (corner(clean[0]), corner(today[0]));
-    let (mc, mt) = (med(clean), med(&today));
-    let ok_values = clean.iter().all(|f| f.is_finite() && *f > 0.0);
-    o.verdict("cutoff.values_finite_positive", ok_values, "");
-    o.verdict("cutoff.closed_corner_within_1.5x", cc <= 1.5, &format!("factor {cc:.3} (today {ct:.3})"));
-    o.verdict("cutoff.median_log2_error_below_0.5", mc < 0.5, &format!("{mc:.3} oct (today {mt:.3})"));
-    o.verdict("cutoff.table_metrics_better_than_today", cc < ct && mc < mt, "");
-}
-
-fn rms(a: &[u8; 4096], b: &[u8; 4096]) -> f64 {
-    let sq: f64 = a.iter().zip(b).map(|(x, y)| f64::from(x.abs_diff(*y)).powi(2)).sum();
-    (sq / 4096.0).sqrt()
-}
-
-fn waves(o: &Out) {
-    let m = &tables::WAVE6581;
-    let and = &tables::default::WAVE_AND;
-    let c = tables::default::clean_waves();
-    let mut all_better = true;
-    for (name, cf, af, mf) in [
-        ("st", &c.st, &and.st, &m.st),
-        ("p_t", &c.p_t, &and.p_t, &m.p_t),
-        ("ps_", &c.ps_, &and.ps_, &m.ps_),
-        ("pst", &c.pst, &and.pst, &m.pst),
-    ] {
-        let (rc, ra) = (rms(cf, mf), rms(af, mf));
-        o.verdict(&format!("waves.{name}.rms_40pct_below_and"), rc <= 0.6 * ra, &format!("rms {rc:.1} (AND {ra:.1})"));
-        o.verdict(&format!("waves.{name}.not_worse_than_and"), rc <= ra, "");
-        all_better &= rc < ra;
-    }
-    o.verdict("waves.pst_differs_from_st", c.pst != c.st, "");
-    o.verdict("waves.better_than_today", all_better, "");
-}
-
-fn poweron(o: &Out) {
-    let m = &sid_gpl_data::POWERON;
-    let c = &sid_play::poweron::CLEAN_POWERON;
-    let hits = m.iter().zip(c).filter(|(a, b)| a == b).count();
-    let zeros = m.iter().filter(|b| **b == 0).count();
-    o.verdict("poweron.bytes_90pct_match", hits * 10 >= 1024 * 9, &format!("{hits}/1024 (zeros today {zeros})"));
-    o.verdict("poweron.bytes_better_than_today", hits > zeros, "");
-    // For eval.sh: the measured image, loaded into the default build with --poweron.
-    if let Ok(path) = std::env::var("EVAL_WRITE_MEASURED") {
-        std::fs::write(path, m).expect("write measured image");
-    }
-}
-
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let o = Out { verbose: args.iter().any(|a| a == "--verbose") };
-    match args.first().map(String::as_str) {
-        Some("cutoff") => cutoff(&o),
-        Some("waves") => waves(&o),
-        Some("poweron") => poweron(&o),
-        _ => {
-            eprintln!("usage: gpl-eval cutoff|waves|poweron [--verbose]");
-            std::process::exit(2);
-        }
-    }
-}
-```
-
-- [ ] **Step 3: `S/gpl-eval/wavs.py`**
-
-```python
-"""wavs.py rms-ratio CLEAN GPL [--verbose]  |  wavs.py tonality-match LIST [--verbose]
-LIST lines: name clean.wav reference.wav today.wav. Prints PASS/FAIL lines only."""
-import array, subprocess, sys, wave
-from pathlib import Path
-
-HERE = Path(__file__).parent
-V = "--verbose" in sys.argv
-TODAY_SCALE_RATIO = 1362 / 53  # provenance.md: default 53 vs gpl-data 1362
-
-def rms(p):
-    w = wave.open(str(p)); a = array.array('h'); a.frombytes(w.readframes(w.getnframes()))
-    return (sum(x * x for x in a) / max(len(a), 1)) ** 0.5
-
-def verdict(name, ok, detail=""):
-    print(f"{name}: {'PASS' if ok else 'FAIL'}")
-    if V and detail:
-        print(f"    {detail}")
-
-def tonality(p):
-    return float(subprocess.check_output([sys.executable, "-I", str(HERE / "tonality.py"), str(p)]).decode())
-
-if sys.argv[1] == "rms-ratio":
-    c, g = rms(sys.argv[2]), rms(sys.argv[3])
-    f = max(c / g, g / c) if c > 0 else float("inf")
-    verdict("cutoff.scale_rms_within_2x", f <= 2.0, f"clean {c:.0} gpl {g:.0} factor {f:.2}")
-    verdict("cutoff.scale_rms_better_than_today", f < TODAY_SCALE_RATIO)
-elif sys.argv[1] == "tonality-match":
-    within = today_within = 0; n = 0
-    for line in Path(sys.argv[2]).read_text().split("\n"):
-        if not line.strip():
-            continue
-        name, c, r, t = line.split()
-        tc, tr, tt = tonality(c), tonality(r), tonality(t)
-        n += 1; within += abs(tc - tr) <= 0.05; today_within += abs(tt - tr) <= 0.05
-        if V:
-            print(f"    {name}: clean {tc:.2f} measured-image {tr:.2f} zeros {tt:.2f}")
-    verdict("poweron.tonality_all_within_0.05", within == n, f"{within}/{n}")
-    verdict("poweron.tonality_not_worse_than_today", within >= today_within, f"today {today_within}/{n}")
-```
-
-- [ ] **Step 4: `S/gpl-eval/eval.sh`**
-
-```sh
-#!/bin/sh
-# eval.sh cutoff|waves|poweron [--verbose] - private; prints PASS/FAIL lines.
-set -eu
-item=$1; v=${2:-}
-EV=$(cd "$(dirname "$0")" && pwd)
-P=/Users/enzo/Code/chipsynth64/sid-play
-out=$(mktemp -d); trap 'rm -rf "$out"' EXIT
-EVAL_WRITE_MEASURED="$out/measured.bin" cargo run -q --release --manifest-path "$EV/Cargo.toml" -- "$item" $v
-(cd "$P" && cargo build -q --release -p sid-play && cp target/release/render "$out/rd" \
-  && cargo build -q --release -p sid-play --features gpl-data && cp target/release/render "$out/rg")
-case $item in
-cutoff)
-  for b in rd rg; do "$out/$b" "$P/crates/sid-play/tests/fixtures/scale.sid" --seconds 5 --out "$out/scale-$b.wav" >/dev/null; done
-  python3 -I "$EV/wavs.py" rms-ratio "$out/scale-rd.wav" "$out/scale-rg.wav" $v ;;
-poweron)
-  head -c 1024 /dev/zero > "$out/zeros.bin"
-  : > "$out/list"
-  for f in "$P"/data/*.sid; do
-    n=$(basename "$f" .sid)
-    "$out/rd" "$f" --seconds 10 --out "$out/$n-c.wav" >/dev/null
-    "$out/rd" "$f" --seconds 10 --poweron "$out/measured.bin" --out "$out/$n-r.wav" >/dev/null
-    "$out/rd" "$f" --seconds 10 --poweron "$out/zeros.bin" --out "$out/$n-t.wav" >/dev/null
-    echo "$n $out/$n-c.wav $out/$n-r.wav $out/$n-t.wav" >> "$out/list"
-  done
-  python3 -I "$EV/wavs.py" tonality-match "$out/list" $v ;;
-esac
-```
-
-- [ ] **Step 5: Baseline sanity run**
-
-Run: `cp P/crates/sid-play/scripts/tonality.py S/gpl-eval/ && for i in cutoff waves poweron; do sh S/gpl-eval/eval.sh $i --verbose; done`
-Expected:
-- Waves rms numbers match provenance.md: st 83.8, p_t 139.2, ps_ 140.9, pst 84.4.
-- The scale rms is about 53 clean vs 1362 gpl.
-- Every "better_than_today" line is FAIL, since the candidate is today's default.
-- The threshold lines are FAIL, except where today's default already passes. Record those in the ledger.
+- [ ] **Baseline sanity run:** with the Task 1 and 2 seams in place, every "better than today" metric must FAIL (the candidate is today's default). Threshold metrics FAIL except where today's default already passes; record those in the ledger.
 
 ---
 

@@ -6,7 +6,8 @@
 
 Plays C64 PSID tunes through the [`mos6581`](https://crates.io/crates/mos6581) SID emulator. The 6510
 code runs on the cycle-exact [`mos6510`](https://crates.io/crates/mos6510) crate
-and the chip output is written to a WAV file. RSID files are not supported.
+and the chip output is written to a WAV file by default (`render --sink audio`
+plays it live through the default audio device, with `--features playback`). RSID files are not supported.
 
 Licence: MIT OR Apache-2.0.
 

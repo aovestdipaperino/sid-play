@@ -1,7 +1,7 @@
 # rust-sid - handoff notes
 
-Branch `main`, sid-play 0.2.0. `cargo test` passes: 28 tests (21 unit tests in
-the library, 7 fixture tests); `cargo test --features playback` passes 28 (22
+Branch `main`, sid-play 0.2.0. `cargo test` passes: 32 tests (25 unit tests in
+the library, 7 fixture tests); `cargo test --features playback` passes 32 (26
 and 6, because the no-audio refusal test only exists without the feature).
 `cargo clippy --all-targets -- -D warnings` is clean with and without
 `--features playback`, and `cargo fmt --check` is clean. There is a single

@@ -10,8 +10,7 @@
 
 ### Changed
 
-- Every render starts from the clean-room power-on RAM image
-  (`sid_play::poweron::POWERON` is now `CLEAN_POWERON`).
+- Every render starts from the clean-room power-on RAM image (`CLEAN_POWERON`).
 - Depends on `mos6581` 0.2, which has dropped its own `gpl-data` feature and
   uses clean-room models for the filter cutoff and the combined waveforms.
 
