@@ -12,13 +12,20 @@ both clean.
 > Coverage: **16/16 corpus PSIDs plus Last Ninja play tonal audio** (10 s
 > renders, autocorrelation medians 0.40 to 0.89). "Old" is the CPU with a
 > partial instruction-fix layer; before any fix, 13 of the 16 were silent.
-> No tune fell below 0.40; `Axel_F` sits right at it. Slightly lower than
-> before: 4_Soccer_Sims, 5_Title_Tunes, ACE_II, All_Terrain_Vehicle,
-> Alternative_World_Games and Axel_F (the largest drop is 0.08).
+> No tune has a median below 0.40, but `Axel_F` sits right at it, and
+> per-window minimums go lower (`Axel_F` 0.12, `Ark_Pandora` 0.24).
+> The medians of six tunes dropped: 4_Soccer_Sims, 5_Title_Tunes, ACE_II,
+> All_Terrain_Vehicle (the most, 0.77 to 0.69), Alternative_World_Games and
+> `Axel_F`. The cause was not investigated. It could be the new core's more
+> faithful timing, or it could be a real regression.
 > Sections further down that say the tunes "decided not to play" are
 > superseded.
 
-| Tune | Old median | New median | New min |
+Tonality medians over 10 s renders. "Old" is lib6502 plus the partial
+instruction-fix layer; "New" is mos6510. Before any CPU fix, 13 of the 16
+PSIDs were silent.
+
+| Tune | Old median (lib6502 + partial fixes) | New median (mos6510) | New min |
 |---|---|---|---|
 | 05-09-87 | 0.61 | 0.62 | 0.48 |
 | 4_Soccer_Sims_Soccer_Skills | 0.68 | 0.66 | 0.52 |
@@ -52,7 +59,7 @@ src/            1929 lines   the chip: wave, envelope, voice, filter, extfilt,
                              resample, sink, sid, tables (generated)
 tests/          1532 lines   behavioural tests per component + fixture renders
 examples/render.rs ~1200     PSID loader + 6510 harness + trace diagnostics
-../mos6510/  the CPU core (separate crate and repository)
+../mos6510/                   the CPU core (separate crate and repository)
 docs/superpowers/specs/      the design spec
 docs/superpowers/plans/      plan 1 (faithful chip)
 .superpowers/sdd/            task briefs, reports, review packages, ledger
@@ -88,7 +95,8 @@ hard sync, ring modulation, envelope, the voice DC model, filter routing and
 resonance, mixer DC, the output-stage high-pass, the sinc resampler, the sink,
 the hand-rolled interrupt entry and the CIA timer.
 
-Three real tunes render sustained tonal audio: `Action_Biker`, `5_Title_Tunes`,
+*Historical (before the CPU fixes; all 16 corpus PSIDs now play, see the update
+above):* three real tunes render sustained tonal audio: `Action_Biker`, `5_Title_Tunes`,
 `05-09-87` (autocorrelation peaks 0.74–0.99, so tonal rather than noise).
 
 ## CPU defects in lib6502 0.2.2
@@ -98,7 +106,9 @@ Historical: rust-sid no longer uses lib6502 (see `../mos6510`).
 Found with a harness that ran Klaus Dormann's `6502_functional_test.bin` on
 lib6502 (the harness has since been removed):
 
-Without `PATCH` it traps at `$0674`; with it, at `$230C`. Worked around so far:
+The unpatched CPU trapped at `$0674`; with the fixups, at `$230C`. The fixups
+(`cpu_fixups.rs`), the `PATCH` switch, `NO_FIXUPS` and `cpu_conformance` no
+longer exist; mos6510 replaced all of it. Defects that were worked around:
 
 | Defect | Effect on tunes |
 |---|---|
@@ -116,8 +126,9 @@ allocates a `String` and reads the operand bytes through the bus.
 
 ## What does not work — the honest coverage number
 
-*Superseded by the update above: with the CPU fixups, 16/16 PSIDs render tonal
-audio (autocorrelation medians 0.41–0.88). Kept for the record.*
+*Historical and superseded by the update above: on mos6510, 16/16 corpus PSIDs
+render tonal audio. The numbers below (3 play, 19%, no findable bug) describe
+the original lib6502 state and are kept for the record.*
 
 From 24 tunes sampled from HVSC (six composers):
 
@@ -151,10 +162,10 @@ stacked P carries `I = 1`, every `RTI` restores interrupts masked, and only one
 interrupt can ever be taken. It also clears I for the handler (hardware leaves
 it set) and pushes B set for a hardware IRQ (B=1 distinguishes BRK).
 
-**Consequence (historical): never call `cpu.irq()`.** `examples/render.rs` performs the
-interrupt entry by hand (`irq_entry`) using lib6502's public `pc`, `sp`,
-`status` and `cycles` fields. The repo has 0 stars and last saw a push in
-October 2024 — do not plan around a fix landing.
+**Consequence (historical): never call `cpu.irq()`.** `examples/render.rs`
+performed the interrupt entry by hand (`irq_entry`) using lib6502's public
+`pc`, `sp`, `status` and `cycles` fields. The repo has 0 stars and last saw a
+push in October 2024, so no fix was expected.
 
 rust-sid no longer depends on lib6502, so issue #4 is history.
 
@@ -187,6 +198,9 @@ Two traps worth recording, because they nearly produced false conclusions:
   **regressed** acceptance from 2 tunes to 1. Reverted in `8eaf07d`. The
   subsequent single-variable test showed zero tunes read `$D012` at all — the
   reads were innocent; the blob was the mistake.
+
+*Historical and wrong: the "decided not to play" conclusion below was refuted;
+the cause was the CPU (see the update at the top).*
 
 What remains: the failing tunes run their player loop, write all 21 voice
 registers plus volume once per frame, read their own tables, and never set a
@@ -245,7 +259,8 @@ From the review ledger (`.superpowers/sdd/progress.md`), none blocking:
 3. RSID support needs the ROMs and a fuller machine; still out of scope.
 4. Widen the corpus beyond six composers.
 
-*Original list:*
+*Historical (written before the CPU cause was found; the first list above
+supersedes it):*
 
 1. **Stop, and document the limit.** The chip is verified; the demo plays some
    tunes. Write the coverage honestly into the README and ship it as an emulator
@@ -257,7 +272,9 @@ From the review ledger (`.superpowers/sdd/progress.md`), none blocking:
 3. **Per-tune investigation** of the 13 silent PSIDs, one tune at a time, using
    `--trace`. Cheap to start, but there is no evidence a shared cause remains.
 
-What I did **not** check, so it isn't hidden: I never compared the *values*
+*Historical, from the same earlier state. The "decided not to play" inference
+here was refuted, and the 13 silent tunes now play.* What I did **not** check,
+so it isn't hidden: I never compared the *values*
 written against what a reference player produces for the same tune — that needs
 libsidplayfp built here, which it isn't. The 24-tune sample is six composers,
 not a representative HVSC slice. And I never confirmed that the 13 silent tunes
