@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed (harness timing and interrupt model)
+
+- CIA-speed songs now run on timer A in the KERNAL post-reset state, so latch writes change the tempo. `Axel_F` had played 9% fast.
+- VBL songs run on the VIC-II frame: 312 x 63 = 19656 cycles PAL, 263 x 65 = 17095 NTSC (6567R8). Before, the period was clock/50, about 0.25% slow.
+- A KERNAL-like IRQ chain: $FFFE saves registers and jumps through ($0314); the default handler acknowledges $DC0D and returns.
+- A non-zero play address is always driven by the harness, and the KERNAL timer A runs for every song.
+- Header length is 0x76 for v1 and 0x7C for v2 and later.
+- The CIA CRA force-load strobe is honoured.
+
+Effect: tempo and timing now follow the hardware. The median spectral distance to the reference player fell from 5.9 dB to 4.5 dB on these fixes alone (see `HANDSOFF.md`). Known stand-in: VBL songs with play=0 get the CIA's 60 Hz rather than a 50 Hz raster IRQ, since there is no VIC-II.
+
 ## 0.2.0 (2026-11-12)
 
 ### Breaking

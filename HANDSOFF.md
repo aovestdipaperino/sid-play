@@ -1,8 +1,8 @@
 # rust-sid - handoff notes
 
-Branch `main`, sid-play 0.2.0. `cargo test` passes: 32 tests (25 unit tests in
-the library, 7 fixture tests); `cargo test --features playback` passes 32 (26
-and 6, because the no-audio refusal test only exists without the feature).
+Branch `main`, sid-play 0.2.0. `cargo test` passes: 56 tests (25 unit tests in
+the library, 7 fixture tests and 24 in the binary's tests); `cargo test --features playback`
+passes 56 (26, 7 and 23, because the no-audio refusal test only exists without the feature).
 `cargo clippy --all-targets -- -D warnings` is clean with and without
 `--features playback`, and `cargo fmt --check` is clean. There is a single
 licence configuration; the `gpl-data` feature was removed in 0.2.0. The only
@@ -272,6 +272,43 @@ against 0.60, and the largest rms-diff, 0.2531). Other numbers: the scale fixtur
 renders at rms 53 by default and 1362 with `gpl-data` (about 25x quieter), and the combined waveform
 tables differ from the measured ones by rms 84 to 141 (of 255). The full list is
 in the "Known default-build fidelity gaps" section of `docs/provenance.md`.
+
+## Fidelity against a reference player (2026-11-12)
+
+The reference is VICE 3.10 `vsid` (ReSID 6581 engine). A private oracle renders each tune with ours and with VICE, aligns the two by correlating octave-band spectrograms (offset 0 to 2.5 s) and reports the RMS dB distance over the octave bands from 31 Hz to 16 kHz, gain-normalised and floored at -55 dBFS per band. The renders and the tool are private and never committed. The rule: clean-room authors only ever see PASS or FAIL, while the controller may compare renders directly to find structural bugs, and any fix has to be justified from public documents with no observed number copied. The details for the models are in mos6581's `docs/provenance.md`.
+
+Median spectral distance over the 17-tune corpus: 5.9 dB at the start, 4.5 dB after the timing fixes, 4.1 dB final. Per tune:
+
+| tune | start (dB) | final (dB) |
+|---|---|---|
+| 05-09-87 | 5.9 | 2.0 |
+| 4_Soccer | 5.0 | 2.0 |
+| 5_Title_Tunes | 11.4 | 2.6 |
+| 64_Dwarfs | 8.3 | 6.3 |
+| 720_Degrees | 5.6 | 4.0 |
+| ACE_II | 5.7 | 4.0 |
+| Acceleration-mix | 8.2 | 7.0 |
+| Action_Biker | 5.3 | 1.7 |
+| All_Points_Bulletin | 7.0 | 4.6 |
+| ATV_Simulator | 5.8 | 3.2 |
+| Alternative_World_Games | 6.9 | 5.1 |
+| Antics | 3.5 | 3.1 |
+| Ark_Pandora | 5.9 | 5.1 |
+| Artura | 5.6 | 4.3 |
+| Athena | 6.3 | 5.6 |
+| Axel_F | 16.8 | 4.1 |
+| last_ninja | 8.1 | 6.9 |
+| median | 5.9 | 4.1 |
+
+Structural harness fixes (commits 468fe9c, 0239d63, de4ac48): CIA-speed songs run on timer A in the KERNAL post-reset state (`Axel_F` had played 9% fast); VBL songs run on the VIC-II frame (19656 cycles PAL, 17095 NTSC); a KERNAL-like IRQ chain; the play address is always driven and the KERNAL timer A runs for every song; header length 0x76 or 0x7C; the CIA CRA force-load strobe.
+
+Known remaining gaps:
+- VBL songs with play=0 get the CIA's 60 Hz instead of a 50 Hz raster IRQ, since there is no VIC-II. A stand-in, with a follow-up due.
+- The filter top end (12 kHz against 16 to 21 kHz on real chips).
+- The `Alternative_World_Games` intermodulation band is still about 7 dB low.
+- `Acceleration-mix` and `64_Dwarfs` (high-resonance filter tunes) are the furthest from VICE, but VICE is itself biased there.
+- The global level is about +1 dB against VICE (board gain, not chased).
+- The residual "never quite silent at envelope 0" floor (about -60 dB) is not modelled.
 
 ## Upstream bug filed
 
