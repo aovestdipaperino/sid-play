@@ -1,6 +1,6 @@
 # Crate split: permissive chip and player, quarantined GPL data
 
-Date: 2026-11-12. Status: approved; plan in `docs/superpowers/plans/2026-11-12-crate-split.md`.
+Date: 2026-11-12. Status: implemented; see the plan and HANDSOFF.md.
 
 ## Why
 

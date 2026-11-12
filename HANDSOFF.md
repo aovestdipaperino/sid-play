@@ -1,4 +1,4 @@
-# rust-sid — handoff notes
+# rust-sid - handoff notes
 
 Branch `feat/faithful-chip`. 7 test targets green (91 tests),
 `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
@@ -56,7 +56,7 @@ A MOS 6581 SID chip emulator in Rust, cycle-accurate at the Φ2 rate, plus a
 PSID harness that runs a tune's 6510 code and renders it through the chip to a
 WAV file.
 
-The library is the chip only — no CPU, no memory map, no player. The CPU is the
+The library is the chip only - no CPU, no memory map, no player. The CPU is the
 `mos6510` crate from crates.io, a dependency of `sid-play`.
 
 ```
@@ -93,8 +93,8 @@ instruction boundaries.
 
 The chip itself. Two fixtures in `crates/sid-play/tests/fixtures/` exercise it end to end:
 
-- `scale.sid` — clock-driven; steps a frequency table through a scale.
-- `irq.sid` — installs its own `$FFFE` handler, programs CIA 1 timer A at latch
+- `scale.sid` - clock-driven; steps a frequency table through a scale.
+- `irq.sid` - installs its own `$FFFE` handler, programs CIA 1 timer A at latch
   `$4C00`, and refuses to touch the chip until the handler has run. Sustains
   **103 interrupts in 2 s** against the expected ~50 Hz, with audio to the last
   sample.
@@ -134,7 +134,7 @@ Not yet worked around: whatever lies past `$230C` (shift/rotate flags first).
 `clock()` also calls `disassemble_instruction_at` on every instruction, which
 allocates a `String` and reads the operand bytes through the bus.
 
-## What does not work — the honest coverage number
+## What does not work - the honest coverage number
 
 *Historical and superseded by the update above: on mos6510, 16/16 corpus PSIDs
 render tonal audio. The numbers below (3 play, 19%, no findable bug) describe
@@ -142,26 +142,80 @@ the original lib6502 state and are kept for the record.*
 
 From 24 tunes sampled from HVSC (six composers):
 
-- **8 are RSID**, not PSID — magic `RSID`, meaning "recorded on a real C64 with
+- **8 are RSID**, not PSID - magic `RSID`, meaning "recorded on a real C64 with
   ROMs enabled". The loader refuses them, correctly and by design.
 - **16 are PSID; 3 play.** Roughly 19% of the format we claim to support.
 
 The 13 failures are not one findable bug. See the investigation log below.
 
-## Licensing — hard constraints, do not change casually
+## Licensing
 
-- Licence is **`GPL-2.0-only`**, deliberately. `crates/mos6581/src/tables/wave6581.rs` and
-  `crates/mos6581/src/tables/wave8580.rs` contain waveform measurement data **byte-identical to
-  reSID's `.dat` files** (verified). That data is GPL-2.0 and cannot be
-  redistributed under a permissive licence. Re-licensing to MIT would require
-  first removing those tables and regenerating them clean-room.
-- Every generated table file carries `Waveform measurement data: reSID (Dag
-  Lem), GPL-2.0.` — licence-required attribution. Do not strip it.
-- `crates/sid-play/src/poweron_table.rs` is derived from libsidplayfp's
-  `poweron.bin` capture (also GPL-2.0) and is **byte-identical to it across all
-  1024 addresses**.
-- `mos6581` has **zero runtime dependencies**; `sid-play` depends on
-  `mos6510` (crates.io) and `mos6581`.
+The repository is split so that the permissive crates carry no GPL material.
+
+- `mos6581` (the chip) and `sid-play` (the PSID player and `render` binary) are
+  `MIT OR Apache-2.0`, each with `LICENSE-MIT`, `LICENSE-APACHE` and a README.
+- `sid-gpl-data` is `GPL-2.0-only`. It holds only the measured data taken from
+  reSID (Dag Lem) and libsidplayfp: the combined waveform tables, the filter
+  cutoff curves, the reSID envelope, filter, voice and noise constants and the
+  power-on RAM pattern. Every item keeps its attribution comment. Its licence
+  text is `crates/sid-gpl-data/LICENSE`; there is no root-level licence file.
+- `gpl-data` is an off-by-default feature of `mos6581` and `sid-play`. Without it
+  the dependency tree does not contain `sid-gpl-data`
+  (`cargo tree -p sid-play -e normal | grep -c sid-gpl-data` prints 0). With
+  `--features gpl-data` the build is GPL-2.0, and its renders are bit-identical to
+  the pre-split baselines.
+- The default build uses clean-room data instead: AND-approximated combined
+  waveforms, a linear 30 Hz to 12 kHz datasheet cutoff, an all-zero power-on RAM
+  image and the constants in `crates/mos6581/src/clean_chip_data.rs`.
+- `docs/provenance.md` records the audit (every item, its origin and how it was
+  resolved), the clean-room defaults and the known default-build fidelity gaps.
+  Its audit left no unresolved Borrowed row outside `sid-gpl-data`.
+- `mos6581` has no runtime dependencies in the default build; `sid-play` depends
+  on `mos6510` (crates.io) and `mos6581`.
+
+Clean-room roadmap (from `docs/superpowers/specs/2026-11-12-crate-split-design.md`):
+replace the `gpl-data` pieces one at a time with data derived from public
+sources or from own measurements, starting with the cutoff closed corner (derive
+it from the datasheet formula and the C64's actual filter capacitors, sourced
+from a public schematic). No GPL source may be consulted to write replacement
+data. When nothing is left to borrow, `sid-gpl-data` and the feature can go.
+
+### Default-build fidelity gap
+
+`crates/sid-play/scripts/fidelity-gap.sh` renders each tune for 10 s with both
+builds. Tonality is the median autocorrelation peak (0.00 is silence); rms-diff is
+the RMS of the difference between the two renders over full scale. Corpus: the 16
+PSIDs in the HVSC sample, Last Ninja and the two test fixtures.
+
+```
+tune                                  default gpl-data   rms-diff
+05-09-87                                 0.60     0.62     0.0748
+4_Soccer_Sims_Soccer_Skills              0.66     0.66     0.0271
+5_Title_Tunes                            0.73     0.71     0.0300
+64_Dwarfs_on_XTC                         0.84     0.89     0.0783
+720_Degrees                              0.87     0.84     0.0521
+Acceleration-mix                         0.44     0.60     0.2531
+ACE_II                                   0.65     0.66     0.0838
+Action_Biker                             0.79     0.78     0.0389
+All_Points_Bulletin                      0.77     0.74     0.0397
+All_Terrain_Vehicle_Simulator            0.83     0.69     0.0623
+Alternative_World_Games                  0.70     0.70     0.0101
+Antics                                   0.85     0.87     0.0189
+Ark_Pandora                              0.51     0.51     0.0352
+Artura                                   0.81     0.80     0.0184
+Athena                                   0.62     0.62     0.0129
+Axel_F                                   0.34     0.40     0.0402
+last_ninja                               0.58     0.58     0.0046
+irq                                      0.86     0.85     0.0308
+scale                                    0.82     0.71     0.0417
+```
+
+No tune is silent in the default build and none is below 0.20. The lowest are
+`Axel_F` (0.34, against 0.40 with `gpl-data`) and `Acceleration-mix` (0.44
+against 0.60, and the largest rms-diff, 0.2531). Other numbers: the scale fixture
+renders at rms 53 by default and 1362 with `gpl-data`, and the combined waveform
+tables differ from the measured ones by rms 84 to 141 (of 255). The full list is
+in the "Known default-build fidelity gaps" section of `docs/provenance.md`.
 
 ## Upstream bug filed
 
@@ -199,14 +253,14 @@ these are eliminated:
 
 Two traps worth recording, because they nearly produced false conclusions:
 
-- The dominant memory reads in every trace — `$0410/$0411/$0412` at 1.93 M each,
-  two thirds of all CPU activity — are **our own halt stub self-looping**
+- The dominant memory reads in every trace - `$0410/$0411/$0412` at 1.93 M each,
+  two thirds of all CPU activity - are **our own halt stub self-looping**
   (`JMP $0410`) while the harness waits between frames. Benign, and present
   identically in working and failing tunes.
 - A VIC raster model landed as one blob (`d576a71`) including `$D011/$D012`
   reads, write interception on `$D000-$D01F` and a `$FFFE` driver, and
   **regressed** acceptance from 2 tunes to 1. Reverted in `8eaf07d`. The
-  subsequent single-variable test showed zero tunes read `$D012` at all — the
+  subsequent single-variable test showed zero tunes read `$D012` at all - the
   reads were innocent; the blob was the mistake.
 
 *Historical and wrong: the "decided not to play" conclusion below was refuted;
@@ -227,15 +281,16 @@ Decisions taken on your behalf, with what they cost if wrong:
 2. **Removed the `level == 0 → output = 0` rule** the plan mandated, in favour
    of hardware behaviour (voice keeps `VOICE_DC` at zero envelope). The plan was
    wrong against hardware: the hard zero is a 50%-of-range step at every release
-   — a click. Silence is achieved downstream by the output-stage high-pass.
+   - a click. Silence is achieved downstream by the output-stage high-pass.
 3. **Removed the brief's hard-sync condition**, which tested the grandparent
    oscillator's MSB flag instead of the source's, so sync never locked. Inherited
    verbatim from the plan text.
 4. **Accepted a documented limitation rather than building ROM support.**
    RSID and Kernal-dependent tunes are out of scope. Cost: the demo plays a
    minority of tunes. *(Historical: all 16 corpus PSIDs now play.)*
-5. **Kept `GPL-2.0-only`** when MIT was requested, because the vendored reSID
-   data cannot be relicensed. The MIT path requires clean-room tables first.
+5. **Kept `GPL-2.0-only`** at first, because the vendored reSID data could not
+   be relicensed. Superseded: the data now lives in `sid-gpl-data` behind the
+   `gpl-data` feature and the other crates are `MIT OR Apache-2.0`.
 6. **Declined to build a Kernal stub** after the trace showed one tune in
    sixteen touches ROM. Cost: if the trace is wrong, a stub is one task of work.
 
@@ -276,8 +331,8 @@ supersedes it):*
    tunes. Write the coverage honestly into the README and ship it as an emulator
    library rather than a player.
 2. **If real-tune coverage matters**, the credible path is adopting
-   libsidplayfp's architecture wholesale — full C64 memory map with the PLA and
-   `$01` banking, plus its `psiddrv` in-machine driver — not continuing to diff
+   libsidplayfp's architecture wholesale - full C64 memory map with the PLA and
+   `$01` banking, plus its `psiddrv` in-machine driver - not continuing to diff
    it piece by piece. This is substantially bigger than the remaining gaps look.
 3. **Per-tune investigation** of the 13 silent PSIDs, one tune at a time, using
    `--trace`. Cheap to start, but there is no evidence a shared cause remains.
@@ -285,7 +340,7 @@ supersedes it):*
 *Historical, from the same earlier state. The "decided not to play" inference
 here was refuted, and the 13 silent tunes now play.* What I did **not** check,
 so it isn't hidden: I never compared the *values*
-written against what a reference player produces for the same tune — that needs
+written against what a reference player produces for the same tune - that needs
 libsidplayfp built here, which it isn't. The 24-tune sample is six composers,
 not a representative HVSC slice. And I never confirmed that the 13 silent tunes
 actually play in a real emulator, so "the tune decided not to play" is an

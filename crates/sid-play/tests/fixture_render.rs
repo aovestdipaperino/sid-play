@@ -9,8 +9,9 @@ use std::process::Command;
 // The fixtures play through a low-pass with the cutoff register at zero, so how
 // loud they are depends on how low the closed corner sits. The built-in curve
 // closes lower than the measured one, so its floor is lower; both must be audible.
-// Floors are about half the observed values: scale rms 1362 and irq tail rms 1067
-// with the measured data, 53 and 27 with the built-in curve.
+// Observed: scale rms 1362 and irq tail rms 1067 with the measured data, 53 and
+// 27 with the built-in curve. The default-build floors are about half the observed
+// values; the gpl-data floors are lower still.
 #[cfg(feature = "gpl-data")]
 const MIN_RMS: f64 = 500.0;
 #[cfg(not(feature = "gpl-data"))]
