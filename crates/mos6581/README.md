@@ -35,7 +35,7 @@ How far the default build is from the measured one:
 - Cutoff: the default curve closes at 30 Hz, the measured one at about 200 Hz, so
   tunes that play through a mostly closed low-pass are much quieter. In the
   `sid-play` fixtures the scale tune renders at rms 53 by default and 1362 with
-  `gpl-data`.
+  `gpl-data`, about 25x quieter.
 
 The full list of known gaps is in the "Known default-build fidelity gaps" section
 of [`docs/provenance.md`](../../docs/provenance.md).

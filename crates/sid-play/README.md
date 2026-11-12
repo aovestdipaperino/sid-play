@@ -23,6 +23,9 @@ linear 30 Hz to 12 kHz filter cutoff, clean-room chip constants and an all-zero
 power-on RAM image. See the "Clean-room defaults" and "Known default-build
 fidelity gaps" sections of [`docs/provenance.md`](../../docs/provenance.md).
 
+The closed filter corner is the biggest audible difference: the scale fixture
+renders at rms 53 by default and 1362 with `gpl-data`, about 25x quieter.
+
 Building with `--features gpl-data` uses measured reSID tables and the
 libsidplayfp power-on pattern from the `sid-gpl-data` crate. A build with that
 feature is GPL-2.0.

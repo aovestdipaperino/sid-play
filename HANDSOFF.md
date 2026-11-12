@@ -1,10 +1,12 @@
 # rust-sid - handoff notes
 
-Branch `feat/faithful-chip`. 7 test targets green (91 tests),
-`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
-both clean.
+Branch `feat/faithful-chip`. `cargo test --workspace` passes: 13 test targets,
+99 tests (default build). `cargo test --workspace --features sid-play/gpl-data`
+passes: the same 13 targets, 97 tests (some tests exist in one configuration
+only). `cargo clippy --workspace --all-targets -- -D warnings` (both
+configurations) and `cargo fmt --check` are clean.
 
-> **Update 2026-11-12: the silent-tune problem was the CPU, not the tunes.**
+> **Update 2026-11-12 (gpl-data build, measured before the crate split): the silent-tune problem was the CPU, not the tunes.**
 > `lib6502` was the cause. It has been replaced by the crate
 > [`mos6510`](https://crates.io/crates/mos6510) 0.1 (cycle-exact NMOS 6510, MIT OR Apache-2.0, passes Tom Harte's
 > SingleStepTests 256/256 and Klaus Dormann's functional test). The CIA now
@@ -26,7 +28,11 @@ both clean.
 > Sections further down that say the tunes "decided not to play" are
 > superseded.
 
-Tonality medians over 10 s renders. "Old" is lib6502 plus the partial
+These numbers are for the gpl-data build. The default (GPL-free) build's table is
+in the "Default-build fidelity gap" section below; its minimum tonality is 0.34
+(`Axel_F`).
+
+Tonality medians over 10 s renders (gpl-data build). "Old" is lib6502 plus the partial
 instruction-fix layer; "New" is mos6510. Before any CPU fix, 13 of the 16
 PSIDs were silent.
 
@@ -61,11 +67,19 @@ The library is the chip only - no CPU, no memory map, no player. The CPU is the
 
 ```
 crates/mos6581/src/          the chip: wave, envelope, voice, filter, extfilt,
-                             resample, sid, tables (generated)
-crates/mos6581/tests/        behavioural tests per component
+                             resample, sid
+crates/mos6581/src/chip_data.rs        picks the constants: gpl-data or clean-room
+crates/mos6581/src/clean_chip_data.rs  clean-room constants with derivations
+crates/mos6581/src/tables/             default.rs (AND-approximated combined
+                             waveforms), fc.rs (cutoff), mod.rs (selection)
+crates/mos6581/tests/        behavioural tests per component, gap.rs (gpl-data)
+crates/sid-gpl-data/         GPL-2.0 data only: wave6581.rs, wave8580.rs,
+                             cutoff.rs, chip.rs, poweron.rs, plus LICENSE
 crates/sid-play/src/         sink (WAV) + main.rs: PSID loader, 6510 harness,
                              trace diagnostics (binary `render`)
 crates/sid-play/tests/       fixture renders (tests/fixtures/*.sid)
+crates/sid-play/scripts/     fidelity-gap.sh and tonality.py
+docs/provenance.md           licence audit, clean-room defaults, fidelity gaps
 mos6510 (crates.io)          the CPU core, github.com/aovestdipaperino/mos6510
 docs/superpowers/specs/      the design spec
 docs/superpowers/plans/      plan 1 (faithful chip)
@@ -78,8 +92,11 @@ docs/superpowers/plans/      plan 1 (faithful chip)
 
 ```sh
 cargo test --workspace
+cargo test --workspace --features sid-play/gpl-data
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run --release -p sid-play --bin render -- tune.sid --seconds 20 --out out.wav
+cargo run --release -p sid-play --features gpl-data --bin render -- tune.sid --seconds 20 --out out.wav   # GPL-2.0 build
+sh crates/sid-play/scripts/fidelity-gap.sh tune.sid...   # default vs gpl-data tonality table
 cargo run --release -p sid-play --bin render -- tune.sid --seconds 5 --out /tmp/x.wav --trace
 ```
 
@@ -99,7 +116,8 @@ The chip itself. Two fixtures in `crates/sid-play/tests/fixtures/` exercise it e
   **103 interrupts in 2 s** against the expected ~50 Hz, with audio to the last
   sample.
 
-Together these cover oscillator, combination-waveform tables, noise clocking,
+Together these cover oscillator, combination waveforms (the measured tables under
+`gpl-data`, the AND approximations by default), noise clocking,
 hard sync, ring modulation, envelope, the voice DC model, filter routing and
 resonance, mixer DC, the output-stage high-pass, the sinc resampler, the sink,
 the CIA timer, which drives the CPU's IRQ pin (the old hand-rolled interrupt
@@ -164,7 +182,8 @@ The repository is split so that the permissive crates carry no GPL material.
   (`cargo tree -p sid-play -e normal | grep -c sid-gpl-data` prints 0). With
   `--features gpl-data` the build is GPL-2.0, and its renders are bit-identical to
   the pre-split baselines.
-- The default build uses clean-room data instead: AND-approximated combined
+- The default build uses clean-room data (some values are documented own choices; see
+  `docs/provenance.md`) instead: AND-approximated combined
   waveforms, a linear 30 Hz to 12 kHz datasheet cutoff, an all-zero power-on RAM
   image and the constants in `crates/mos6581/src/clean_chip_data.rs`.
 - `docs/provenance.md` records the audit (every item, its origin and how it was
@@ -213,7 +232,7 @@ scale                                    0.82     0.71     0.0417
 No tune is silent in the default build and none is below 0.20. The lowest are
 `Axel_F` (0.34, against 0.40 with `gpl-data`) and `Acceleration-mix` (0.44
 against 0.60, and the largest rms-diff, 0.2531). Other numbers: the scale fixture
-renders at rms 53 by default and 1362 with `gpl-data`, and the combined waveform
+renders at rms 53 by default and 1362 with `gpl-data` (about 25x quieter), and the combined waveform
 tables differ from the measured ones by rms 84 to 141 (of 255). The full list is
 in the "Known default-build fidelity gaps" section of `docs/provenance.md`.
 
