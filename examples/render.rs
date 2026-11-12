@@ -34,15 +34,9 @@ struct Stubs {
     init: u16,
     play: u16,
     halt: u16,
-    /// The stand-in for the ROM's interrupt chain, installed at the interrupt
-    /// vector so a tune that enables an interrupt but brings no handler still
-    /// reaches its play routine.
-    irq: u16,
-    /// A bare `RTS`, for a tune with no play address at all.
-    nop: u16,
 }
 
-const STUB_SPAN: usize = 0x40;
+const STUB_SPAN: usize = 0x20;
 
 /// Find a page the tune's block does not occupy, to hold the harness's stubs.
 ///
@@ -59,8 +53,6 @@ fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
                 init: page,
                 play: page + 8,
                 halt: page + 16,
-                irq: page + 24,
-                nop: page + 56,
             });
         }
         page += 0x100;
@@ -369,119 +361,10 @@ impl Cia {
     }
 }
 
-/// A VIC-II reduced to what playing a tune needs: the raster line counter, the
-/// raster-compare interrupt, and the frame clock the Kernal keeps in `$A0`.
-///
-/// The frame clock is not a nicety. A play routine is a slice of one frame's
-/// work, and most of them decide how much of the tune to advance by measuring
-/// elapsed frame clocks. With `$A0` frozen such a routine sets the chip up on
-/// its first call and then repeats that same setup forever — thousands of
-/// register writes and not one note — or, if it waits for the clock to change,
-/// it never returns at all and the tune stops after a single frame.
-#[derive(Default)]
-struct Vic {
-    /// `$D000..$D01F` as written. Only the raster and interrupt registers are
-    /// read back with anything other than the stored value.
-    regs: [u8; 0x20],
-    line: u16,
-    line_cycles: u64,
-    lines_per_frame: u16,
-    /// Set interrupt flags; bit 0 is raster.
-    flags: u8,
-    /// Which flags are allowed to pull the interrupt line.
-    mask: u8,
-}
-
-/// Φ2 cycles per raster line on both C64 video standards.
-const RASTER_LINE_CYCLES: u64 = 63;
-
-impl Vic {
-    fn new(pal: bool) -> Self {
-        Self {
-            lines_per_frame: if pal { 312 } else { 263 },
-            ..Self::default()
-        }
-    }
-
-    /// The line the raster interrupt fires on: the low eight bits from `$D012`
-    /// with the ninth held by bit 3 of `$D011`.
-    fn compare(&self) -> u16 {
-        (u16::from(self.regs[0x11] & 0x08) << 5) | u16::from(self.regs[0x12])
-    }
-
-    /// Advance one Φ2 cycle. Returns true on the cycle a new line begins.
-    fn tick(&mut self) -> bool {
-        self.line_cycles += 1;
-        if self.line_cycles < RASTER_LINE_CYCLES {
-            return false;
-        }
-        self.line_cycles = 0;
-        self.line = if self.line + 1 >= self.lines_per_frame {
-            0
-        } else {
-            self.line + 1
-        };
-        if self.line == self.compare() {
-            self.flags |= 0x01;
-        }
-        true
-    }
-
-    fn line(&self) -> bool {
-        self.flags & self.mask & 0x01 != 0
-    }
-
-    fn read(&self, r: usize) -> u8 {
-        match r {
-            // Bit 7 reports the ninth bit of the *current* line; the rest is
-            // whatever was written.
-            0x11 => (self.regs[0x11] & 0x3f) | u8::from(self.line & 0x100 != 0) << 7,
-            0x12 => (self.line & 0xff) as u8,
-            0x1a => self.mask,
-            _ => self.regs[r],
-        }
-    }
-
-    /// Reading the interrupt register reports the flags and clears them, which
-    /// is what releases the line.
-    fn read_irr(&mut self) -> u8 {
-        let value = self.flags | 0x80;
-        self.flags = 0;
-        value
-    }
-
-    fn write(&mut self, r: usize, value: u8) {
-        if r == 0x19 {
-            self.write_irq(value);
-        } else if r == 0x1a {
-            self.write_mask(value);
-        } else {
-            self.regs[r] = value;
-        }
-    }
-
-    fn write_irq(&mut self, value: u8) {
-        if value & 0x80 != 0 {
-            self.flags |= value & 0x1f;
-        } else {
-            self.flags &= !(value & 0x1f);
-        }
-    }
-
-    fn write_mask(&mut self, value: u8) {
-        if value & 0x80 != 0 {
-            self.mask |= value & 0x1f;
-        } else {
-            self.mask &= !(value & 0x1f);
-        }
-    }
-}
-
 struct Machine {
     ram: [u8; 0x1_0000],
     sid: Sid,
     cia: RefCell<Cia>,
-    vic: RefCell<Vic>,
     /// How many writes have reached the chip. Reported in the summary as a
     /// diagnostic; it is deliberately not used to decide anything.
     sid_writes: Cell<u64>,
@@ -493,38 +376,8 @@ impl Machine {
             ram: [0; 0x1_0000],
             sid: Sid::new(model, RATE),
             cia: RefCell::new(Cia::default()),
-            vic: RefCell::new(Vic::new(model == Model::Pal)),
             sid_writes: Cell::new(0),
         }
-    }
-
-    /// Advance the two interrupt sources by one Φ2 cycle, and tick the frame
-    /// clock the Kernal keeps in `$A0` once per raster line. Returns the cycle on
-    /// which the CIA's line rises, which is what drives a tune played on the
-    /// CIA rather than on the harness's own counter.
-    fn tick(&mut self) -> bool {
-        let underflow = self.cia.borrow_mut().tick();
-        if self.vic.borrow_mut().tick() {
-            self.ram[0x00a0] = self.ram[0x00a0].wrapping_add(1);
-        }
-        underflow
-    }
-
-    /// Whether either chip is currently pulling the processor's interrupt line.
-    fn irq_line(&self) -> bool {
-        self.cia.borrow().line() || self.vic.borrow().line()
-    }
-
-    /// Whether the tune has armed an interrupt source at all.
-    ///
-    /// A CIA whose latch is still zero would underflow on every cycle and turn
-    /// the interrupt into a storm, so an armed-but-unlatched timer counts as
-    /// disarmed and the tune is played on the harness's own frame counter
-    /// instead.
-    fn irq_sources_enabled(&self) -> bool {
-        let cia = self.cia.borrow();
-        let armed = cia.started && cia.latch != 0;
-        armed || self.vic.borrow().mask != 0
     }
 }
 
@@ -533,10 +386,6 @@ impl Bus for Machine {
         let a = usize::from(address);
         match a {
             0xd400..=0xd5ff => self.sid.read(a - 0xd400),
-            0xd000..=0xd01f => match a - 0xd000 {
-                0x19 => self.vic.borrow_mut().read_irr(),
-                r => self.vic.borrow().read(r),
-            },
             0xdc00..=0xdc0f => match a - 0xdc00 {
                 4 => (self.cia.borrow().counter & 0xff) as u8,
                 5 => (self.cia.borrow().counter >> 8) as u8,
@@ -555,7 +404,6 @@ impl Bus for Machine {
                 self.sid_writes.set(self.sid_writes.get() + 1);
                 self.sid.write(a - 0xd400, value);
             }
-            0xd000..=0xd01f => self.vic.borrow_mut().write(a - 0xd000, value),
             0xdc00..=0xdc0f => match a - 0xdc00 {
                 4 | 5 => {
                     let mut cia = self.cia.borrow_mut();
@@ -626,43 +474,6 @@ fn write_halt_loop(ram: &mut [u8; 0x1_0000], halt: u16) {
     ram[s] = 0x4c;
     ram[s + 1] = (halt & 0xff) as u8;
     ram[s + 2] = (halt >> 8) as u8;
-}
-
-/// A stand-in for the ROM's interrupt chain, for the large class of tunes that
-/// enable a hardware interrupt in their init but bring no handler of their own,
-/// expecting the machine's existing one to reach their play routine.
-///
-/// Without it such a tune waits forever on a flag only its own handler would
-/// set: the init returns, the harness calls play once, and play never comes back.
-/// Saving and restoring the registers around the call is what lets the
-/// processor return to whatever it was doing.
-fn write_irq_driver(ram: &mut [u8; 0x1_0000], stubs: Stubs, play: u16) {
-    let s = usize::from(stubs.irq);
-    let entry = if play == 0 { stubs.nop } else { play };
-    let code: [u8; 20] = [
-        0x48, // PHA
-        0x8a, // TXA
-        0x48, // PHA
-        0x98, // TYA
-        0x48, // PHA
-        0xad,
-        0x0d,
-        0xdc, // LDA $DC0D — acknowledge and release the CIA's line
-        0xad,
-        0x19,
-        0xd0, // LDA $D019 — acknowledge and release the VIC's line
-        0x20,
-        (entry & 0xff) as u8,
-        (entry >> 8) as u8, // JSR play
-        0x68,               // PLA
-        0xa8,               // TAY
-        0x68,               // PLA
-        0xaa,               // TAX
-        0x68,               // PLA
-        0x40,               // RTI
-    ];
-    ram[s..s + code.len()].copy_from_slice(&code);
-    ram[usize::from(stubs.nop)] = 0x60; // RTS
 }
 
 /// Lay down the machine state a tune expects to find, before its init runs.
@@ -769,13 +580,11 @@ fn setup(model: Model, loaded: &Loaded, pal: bool, stubs: Stubs) -> Rc<RefCell<M
             write_play_stub(&mut m.ram, stubs, loaded.play);
         }
         write_halt_loop(&mut m.ram, stubs.halt);
-        write_irq_driver(&mut m.ram, stubs, loaded.play);
-        // Point the interrupt vector at the harness's stand-in for the ROM's
-        // chain. A tune that installs its own handler overwrites this and owns
-        // its own timing; one that leaves it alone still reaches its play
-        // routine when a hardware interrupt fires.
-        m.ram[usize::from(IRQ_VECTOR)] = (stubs.irq & 0xff) as u8;
-        m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.irq >> 8) as u8;
+        // Point the interrupt vector at the halt loop, so a tune that never
+        // installs a handler leaves it there and the harness can tell. A tune
+        // that does install one overwrites this and owns its own timing.
+        m.ram[usize::from(IRQ_VECTOR)] = (stubs.halt & 0xff) as u8;
+        m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.halt >> 8) as u8;
         m.ram[usize::from(RESET_VECTOR)] = (stubs.halt & 0xff) as u8;
         m.ram[usize::from(RESET_VECTOR + 1)] = (stubs.halt >> 8) as u8;
     }
@@ -802,18 +611,9 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
         harness.cycle(&mut cpu);
         budget -= 1;
     }
-    // Who drives the frame. A tune that installed its own handler owns its own
-    // timing and must only ever be reached by its interrupts. One that left the
-    // vector alone but armed a hardware interrupt is reached through the
-    // harness's stand-in for the ROM's chain. One that armed nothing at all is
-    // played on the harness's own counter, which is the usual case for a tune
-    // that simply expects to be called once a frame.
-    let owns_vector = harness.irq_vector() != stubs.irq;
-    let armed = harness.machine.borrow().irq_sources_enabled();
-    harness.frame_clock = !owns_vector && harness.has_play_stub && !armed;
-    // Every interrupt that reaches the tune through the harness's driver is one
-    // frame of the tune, so the summary can still report a frame count.
-    harness.frames_by_driver = !owns_vector && !harness.frame_clock;
+    // Whose handler is installed decides who drives the frame. A tune with no
+    // play address at all is driven purely by its own interrupts.
+    harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.halt;
     (cpu, harness)
 }
 
@@ -835,9 +635,6 @@ struct Harness {
     /// Interrupts taken and frames driven, for the summary line.
     irqs: u64,
     frames: u64,
-    /// The tune is reached through the harness's stand-in for the ROM's chain, so
-    /// each interrupt delivered is one frame of the tune.
-    frames_by_driver: bool,
     audio: Vec<f32>,
 }
 
@@ -858,7 +655,6 @@ impl Harness {
             frame_clock: false,
             irqs: 0,
             frames: 0,
-            frames_by_driver: false,
             audio: Vec::with_capacity(4096),
         }
     }
@@ -875,7 +671,7 @@ impl Harness {
     /// it just saw. An instruction in progress always finishes, which is why the
     /// request is only offered when the processor has no cycles left to spend.
     fn cycle(&mut self, cpu: &mut Cpu) {
-        let underflow = self.machine.borrow_mut().tick();
+        let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
             // The tune brought no handler, so the harness is the player. It
             // cannot wait on the processor's interrupt flag, because a tune
@@ -900,20 +696,16 @@ impl Harness {
                 self.frames += 1;
             }
         } else {
-            // The tune owns the interrupt vector, so it is driven by its own
-            // chips the same way it is on a real machine. There is no remembered
-            // request here on purpose: both interrupt lines are level-triggered
-            // and stay asserted until the handler acknowledges them, so the line
-            // itself is what has to be tested. Latching the request instead would
-            // re-fire it the moment the handler returns, long after the chip
-            // released it.
-            let asserted = self.machine.borrow().irq_line();
+            // The tune owns the interrupt vector, so it is driven by its CIA the
+            // same way it is on a real machine. There is no remembered request
+            // here on purpose: the CIA's line is level-triggered and stays
+            // asserted until the handler acknowledges it, so the line itself is
+            // what has to be tested. Latching the request instead would re-fire
+            // it the moment the handler returns, long after the CIA released it.
+            let asserted = self.machine.borrow().cia.borrow().line();
             if asserted && cpu.cycles == 0 && (cpu.status & I_FLAG) == 0 {
                 irq_entry(cpu, &mut self.machine.borrow_mut());
                 self.irqs += 1;
-                if self.frames_by_driver {
-                    self.frames += 1;
-                }
             }
         }
 
@@ -1057,6 +849,5 @@ fn run() -> Result<(), Box<dyn Error>> {
         v1_ctrl,
         v1_freq,
     );
-
     Ok(())
 }
