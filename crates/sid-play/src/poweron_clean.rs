@@ -8,6 +8,9 @@
 //!   `Compute_s_Mapping_the_Commodore_64`, full text)
 //!
 //! Anything not documented stays zero. See REPORT.md.
+//!
+//! Values chosen where sources conflict or are silent are marked as own
+//! choices or inferences; see mos6581's docs/provenance.md.
 
 const SIZE: usize = 0x400;
 
@@ -27,7 +30,8 @@ const fn build() -> [u8; SIZE] {
     let mut m = [0u8; SIZE];
 
     // $00 D6510. Source: PT $0000 lists $EF in one source and $2F in another.
-    // Own choice: $2F (bits 0-5 significant, per PT, so bits 6-7 clear).
+    // Own choice: $2F (own knowledge: the 6510 port has six bits, so bits 6-7
+    // are clear).
     m = set8(m, 0x00, 0x2F);
     // $01 R6510. Source: PT $0001 "Default $37 (%00110111)".
     m = set8(m, 0x01, 0x37);
@@ -43,15 +47,18 @@ const fn build() -> [u8; SIZE] {
     // when the stack is empty".
     m = set8(m, 0x16, 0x19);
     // $17-$18 LASTPT. Source: PT $0017-$0018 "byte 23 is 3 less than byte 22;
-    // byte 24 is 0". Derived: $16, $00.
+    // byte 24 is 0".
+    // Derived: $16, $00.
     m = set16(m, 0x17, 0x0016);
 
     // $2B-$2C TXTTAB. Source: PT $002B and MAP 43-44, default $0801.
     m = set16(m, 0x2B, 0x0801);
     // $2D-$2E VARTAB, $2F-$30 ARYTAB, $31-$32 STREND. Sources say only that
-    // VARTAB is "end of program + 1" (PT, MAP). Derived: empty program means
-    // end+1 = $0803 (three zero bytes at $0801-$0803 are outside this image).
-    // ARYTAB/STREND set equal to VARTAB as for an empty variable area (derived).
+    // VARTAB is "end of program + 1" (PT, MAP); PT adds that it is "set to
+    // TXTTAB by SCRATCH".
+    // Derived: empty program means end+1 = $0803 (three zero bytes at
+    // $0801-$0803 are outside this image).
+    // Derived: ARYTAB/STREND set equal to VARTAB as for an empty variable area.
     m = set16(m, 0x2D, 0x0803);
     m = set16(m, 0x2F, 0x0803);
     m = set16(m, 0x31, 0x0803);
@@ -93,28 +100,37 @@ const fn build() -> [u8; SIZE] {
     m[0x8F] = 0x58;
 
     // $91 STKEY. Source: PT $0091 "$FF = no key pressed".
+    // Derived: the register holds $FF (no key) at READY.
     m = set8(m, 0x91, 0xFF);
-    // $95 BSOUR. Source: PT $0095 "$FF = nothing waiting". Derived.
+    // $95 BSOUR. Source: PT $0095 "$FF = nothing waiting".
+    // Derived: the register holds $FF at READY.
     m = set8(m, 0x95, 0xFF);
     // $99 DFLTN = 0 keyboard, $9A DFLTO = 3 screen. Source: PT $0099, $009A.
     m = set8(m, 0x99, 0x00);
     m = set8(m, 0x9A, 0x03);
     // $9D MSGFLG. Source: PT $009D "128 in direct mode".
     m = set8(m, 0x9D, 0x80);
-    // $A0-$A2 TIME. Source: PT $00A0 "Starts at 0 at power-on". Zero.
+    // $A0-$A2 TIME. Own choice: zero. The jiffy clock will already have
+    // counted by READY; a fixed zero is chosen for determinism.
 
     // $B2-$B3 TAPE1. Source: MAP 178-179 "set to ... cassette buffer (828, $33C)".
     m = set16(m, 0xB2, 0x033C);
-    // $C5 LSTX and $CB SFDX. Source: PT $00C5, $00CB "64 = none".
+    // $C5 LSTX and $CB SFDX. Source: PT $00C5, $00CB documents $40 (64) as the
+    // "no key pressed" value.
+    // Derived/inferred: that the registers hold $40 at READY is the author's
+    // inference.
     m = set8(m, 0xC5, 0x40);
     m = set8(m, 0xCB, 0x40);
     // $D5 LNMX. Source: PT $00D5 "$27 or $4F". Derived: $27 (40-column line).
     m = set8(m, 0xD5, 0x27);
 
-    // $D9-$F2 LDTB1 line link table. Source: PT $00D9 (25 entries; bits 0-3
-    // screen page; bit 7 set for first/only physical line) and MAP 217-242.
+    // $D9-$F2 LDTB1 line link table. Source: PT $00D9 (25 entries) and
+    // MAP 217-242 describe the table. The bit-7 polarity (set for a
+    // first/only physical line) and the nibble interpretation (high-byte
+    // value vs. page index) were chosen by the author from ambiguous or
+    // conflicting text in PT, not stated unambiguously there.
     // Derived: every row a single physical line at $0400+40*row, so
-    // $80 | high byte of the row address.
+    // $80 | high byte of the row address (low nibble).
     let mut row = 0;
     while row < 25 {
         let page = ((0x0400 + 40 * row) >> 8) as u8;
@@ -122,7 +138,9 @@ const fn build() -> [u8; SIZE] {
         row += 1;
     }
 
-    // $F5-$F6 KEYTAB. Source: PT $00F5, MAP 245-246: $EB81.
+    // $F5-$F6 KEYTAB. Source: PT $00F5 (MAP 245-246) gives $EB81 as the
+    // default unshifted keyboard table address.
+    // Inferred: that the pointer holds it at READY.
     m = set16(m, 0xF5, 0xEB81);
 
     // $0281-$0282 MEMSTR. Source: PT $0281 "$0800".
@@ -150,10 +168,11 @@ const fn build() -> [u8; SIZE] {
     m = set16(m, 0x304, 0xA57C); // ICRNCH
     m = set16(m, 0x306, 0xA71A); // IQPLOP
     m = set16(m, 0x308, 0xA7E4); // IGONE
+    // IEVAL: PT also lists an alternate value ($AE83); the author chose $AE86.
     m = set16(m, 0x30A, 0xAE86); // IEVAL
     // $0310 USR opcode JMP ($4C) and $0311-$0312 USRADD. Source: PT $0310
-    // note ($4C) and its note that the target is the USR function vector
-    // $B248 (ILLEGAL QUANTITY routine, PT $0311 text).
+    // note ($4C). $B248 appears in PT's $0310 entry label ("USR function jump
+    // ([$B248])"), not in the $0311 body text.
     m = set8(m, 0x310, 0x4C);
     m = set16(m, 0x311, 0xB248);
 
@@ -169,11 +188,14 @@ const fn build() -> [u8; SIZE] {
     m = set16(m, 0x324, 0xF157); // IBASIN
     m = set16(m, 0x326, 0xF1CA); // IBSOUT
     m = set16(m, 0x328, 0xF6ED); // ISTOP
+    // IGETIN: PT also lists 61785 decimal (marked "verify" in PT); the author
+    // chose $F13E.
     m = set16(m, 0x32A, 0xF13E); // IGETIN
     m = set16(m, 0x32C, 0xF32F); // ICLALL
     m = set16(m, 0x32E, 0xFE66); // USRCMD
-    // PT gives two values each for LOAD/SAVE ($F49E/$F4A5, $F5DD/$F5ED).
-    // Own choice: the "default" entries $F4A5 and $F5ED.
+    // PT gives two candidates for each of LOAD/SAVE (ILOAD: $F49E entry vs.
+    // $F4A5 header; ISAVE: $F5DD header vs. $F5ED entry).
+    // Own choice: $F4A5 for ILOAD and $F5ED for ISAVE.
     m = set16(m, 0x330, 0xF4A5); // ILOAD
     m = set16(m, 0x332, 0xF5ED); // ISAVE
 
