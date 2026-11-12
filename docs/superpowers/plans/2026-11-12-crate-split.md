@@ -39,7 +39,7 @@ crates/sid-play/                   MIT OR Apache-2.0
   scripts/fidelity-gap.sh, scripts/tonality.py
 crates/sid-gpl-data/               GPL-2.0-only
   Cargo.toml, README.md, LICENSE (GPL-2.0 text)
-  src/{lib,wave6581,wave8580,cutoff,poweron}.rs
+  src/{lib,wave6581,wave8580,cutoff,poweron,chip}.rs
 tools/                             generators, now writing into crates/sid-gpl-data
 docs/provenance.md                 the audit table
 HANDSOFF.md
@@ -370,6 +370,78 @@ replaced by clean-room data; when the crate is empty it will be deleted.
 
 Move the data tests from `crates/mos6581/src/tables/mod.rs` (`tables_are_4096_entries_of_8_bits`, `the_6581_combination_tables_lose_amplitude`, `the_triangle_combination_rises_then_falls`, `the_combination_tables_are_distinct`) into a `#[cfg(test)] mod tests` in `crates/sid-gpl-data/src/lib.rs`, using `crate::{WAVE6581, WAVE8580}`. Keep `both_clock_variants_share_the_6581_tables` in mos6581.
 
+- [ ] **Step 1b: Move the audit's chip constants (decision 2026-11-12: data to the GPL crate)**
+
+The provenance audit (`docs/provenance.md`) found nine more reSID-derived items. Their *values* move into `sid-gpl-data` as data; `mos6581` reads them through one module so Task 5 can add clean-room defaults. Behaviour must not change: keep each arithmetic expression exactly as it is today and only replace literals with the named constants (the bit-identical render check is the oracle).
+
+Create `crates/sid-gpl-data/src/chip.rs` and re-export everything from `lib.rs` (`pub use chip::*;`):
+
+```rust
+//! SID chip constants: reSID (Dag Lem), GPL-2.0. See docs/provenance.md.
+
+/// Envelope rate-counter period per ADSR nibble.
+pub const ENV_RATE_PERIOD: [u16; 16] = [
+    9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
+];
+/// (envelope counter value, exponential-counter period) loaded on falling phases.
+pub const ENV_EXPONENTIAL_BREAKPOINTS: &[(u8, u16)] =
+    &[(0, 1), (6, 30), (14, 16), (26, 8), (54, 4), (93, 2), (255, 1)];
+/// The 15-bit rate counter skips 0 when it wraps.
+pub const ENV_RATE_COUNTER_SKIPS_ZERO: bool = true;
+/// External filter low-pass and high-pass pole frequencies, rad/s.
+pub const EXTFILT_W0_LOW: f64 = 104_858.0;
+pub const EXTFILT_W0_HIGH: f64 = 105.0;
+/// Filter Q model: Q = FILTER_Q_MIN + res / FILTER_Q_STEPS.
+pub const FILTER_Q_MIN: f64 = 0.707;
+pub const FILTER_Q_STEPS: f64 = 15.0;
+/// DC added by the mixer, in voice-output units.
+pub const MIXER_DC: f64 = -1.0 / 18.0;
+/// Waveform DAC zero level and voice DC offset.
+pub const VOICE_WAVE_ZERO: i32 = 0x380;
+pub const VOICE_DC: i32 = 0x800 * 0xff;
+/// Noise register bits wired to output bits 11 down to 4, in that order.
+pub const NOISE_OUTPUT_TAPS: [u8; 8] = [22, 20, 16, 13, 11, 7, 4, 2];
+/// Accumulator bit whose rising edge clocks the noise register.
+pub const NOISE_CLOCK_BIT: u8 = 19;
+/// Noise register value after reset and on release of the test bit.
+pub const NOISE_SHIFT_RELOAD: u32 = 0x7f_ff_f8;
+```
+
+Create `crates/mos6581/src/chip_data.rs` (declare `mod chip_data;` in `lib.rs`, private):
+
+```rust
+//! Chip constants whose values are borrowed (see docs/provenance.md). Read
+//! through this module so the source can be switched in one place.
+
+pub(crate) use sid_gpl_data::{
+    ENV_EXPONENTIAL_BREAKPOINTS, ENV_RATE_COUNTER_SKIPS_ZERO, ENV_RATE_PERIOD, EXTFILT_W0_HIGH,
+    EXTFILT_W0_LOW, FILTER_Q_MIN, FILTER_Q_STEPS, MIXER_DC, NOISE_CLOCK_BIT, NOISE_OUTPUT_TAPS,
+    NOISE_SHIFT_RELOAD, VOICE_DC, VOICE_WAVE_ZERO,
+};
+```
+
+Code changes in `mos6581` (use `crate::chip_data::…`):
+- `envelope.rs`: `const RATE_PERIOD: [u16; 16] = chip_data::ENV_RATE_PERIOD;`. Build `EXPONENTIAL_PERIOD` with a `while` loop over `ENV_EXPONENTIAL_BREAKPOINTS` setting `t[level as usize] = period`. Replace the rate-counter wrap (the copied line) with this, which behaves identically:
+  ```rust
+  // The rate counter is 15 bits wide and wraps past 0x7fff.
+  self.rate_counter = (self.rate_counter + 1) & 0x7fff;
+  if self.rate_counter == 0 && chip_data::ENV_RATE_COUNTER_SKIPS_ZERO {
+      self.rate_counter = 1;
+  }
+  ```
+- `extfilt.rs`: `W0_LOW`/`W0_HIGH` take `chip_data::EXTFILT_W0_LOW`/`EXTFILT_W0_HIGH`.
+- `filter.rs`: initial `inv_q: 1.0 / chip_data::FILTER_Q_MIN`; `set_resonance`: `1.0 / (chip_data::FILTER_Q_MIN + f64::from(res & 0x0f) / chip_data::FILTER_Q_STEPS)`; `MIXER_DC` from `chip_data`.
+- `voice.rs`: `WAVE_ZERO`/`VOICE_DC` from `chip_data::VOICE_WAVE_ZERO`/`VOICE_DC`.
+- `wave.rs`: `SHIFT_RELOAD` from `chip_data::NOISE_SHIFT_RELOAD`; `ACC_BIT19` becomes `const NOISE_CLOCK: u32 = 1 << chip_data::NOISE_CLOCK_BIT;` (rename its uses); `noise_output` becomes a loop:
+  ```rust
+  let mut out = 0u16;
+  for (i, &tap) in chip_data::NOISE_OUTPUT_TAPS.iter().enumerate() {
+      out |= (((self.shift >> tap) & 1) as u16) << (11 - i);
+  }
+  out
+  ```
+Remove the old literal definitions and any comments that restate the borrowed values. Comments describing the behaviour (what the counter or filter does) stay.
+
 - [ ] **Step 2: Wire it in (non-optional for now)**
 
 Root `Cargo.toml` members: add `"crates/sid-gpl-data"`.
@@ -421,6 +493,8 @@ git commit -m "refactor: quarantine the borrowed GPL data in the sid-gpl-data cr
 ---
 
 ### Task 4: `gpl-data` feature and GPL-free defaults
+
+Clean-room task: part B below applies its stricter rule to the whole task. Do not open GPL emulator sources, `crates/sid-gpl-data/` (beyond the item names listed in this task), the Evidence column of `docs/provenance.md`, Task 3 of the plan, or the git history of the files that held the moved constants.
 
 **Files:**
 - Create: `crates/mos6581/src/tables/default.rs`, `crates/mos6581/tests/gap.rs`
@@ -653,6 +727,50 @@ fn print_the_table_gap() {
 }
 ```
 
+#### Task 4, part B: clean-room defaults for the chip constants (do before Step 6)
+
+Clean-room rule for this task, stricter than the global one: the implementer must not open any GPL emulator source, `crates/sid-gpl-data/`, the Evidence column of `docs/provenance.md`, or the git history of the files that held the constants. Values come only from public non-GPL sources (MOS 6581 datasheet, Commodore 64 schematics, the Commodore 64 Programmer's Reference Guide, published interviews and hardware articles) or from own derivation, each recorded next to the value.
+
+**Files:**
+- Modify: `crates/mos6581/src/chip_data.rs`
+- Create: `crates/mos6581/src/chip_data/clean.rs` (or make `chip_data` a directory module) holding the defaults
+- Modify: tests that pin borrowed values (see Step 3)
+- Modify: `docs/provenance.md` (add a "Clean-room defaults" section)
+
+**Interfaces:**
+- Consumes: the thirteen names in `chip_data` from Task 3 Step 1b, with the same types.
+- Produces: the same names, chosen by `#[cfg(feature = "gpl-data")]` (re-export from `sid-gpl-data`) / `#[cfg(not(feature = "gpl-data"))]` (from `clean.rs`).
+
+- [ ] **Step 5a: Derive each default and record its source**
+
+For each constant write the value and a comment of the form `// Source: <document, section/page>; <one-line derivation>`:
+- `ENV_RATE_PERIOD`: from the datasheet's attack-time table (2 ms … 8 s) and the Φ2 clock, with a rounding rule you state.
+- `ENV_EXPONENTIAL_BREAKPOINTS`: the datasheet says decay and release are exponential; derive your own piecewise-doubling approximation of an exponential and state the target time constant.
+- `ENV_RATE_COUNTER_SKIPS_ZERO`: `false` unless a non-GPL source documents otherwise.
+- `EXTFILT_W0_LOW`, `EXTFILT_W0_HIGH`: `1/RC` from the C64 audio output stage component values in the published Commodore schematics (name the schematic and the parts).
+- `FILTER_Q_MIN`, `FILTER_Q_STEPS`: an own Q model for the datasheet's 16 resonance settings; state it.
+- `MIXER_DC`, `VOICE_WAVE_ZERO`, `VOICE_DC`: own choice with reasoning (e.g. a centred DAC), or a cited measurement.
+- `NOISE_OUTPUT_TAPS`, `NOISE_CLOCK_BIT`, `NOISE_SHIFT_RELOAD`: cite a non-GPL source (for example published interviews with the chip's designer or die analyses) if one exists; otherwise an own choice, marked "unsourced own choice" so the fidelity cost is visible.
+If a value turns out equal to what the gpl build uses, that is fine only if the recorded derivation produced it.
+
+- [ ] **Step 5b: Select by feature**
+
+`chip_data.rs` re-exports from `sid_gpl_data` under `#[cfg(feature = "gpl-data")]` and from `clean` under `#[cfg(not(feature = "gpl-data"))]`.
+
+- [ ] **Step 5c: Tests**
+
+Gate with `#[cfg(feature = "gpl-data")]` every test that pins a borrowed value (for example `MIXER_DC` in `tests/filter.rs`, the voice DC values in `tests/wave.rs`, the 756-period sweep in `tests/envelope.rs`), with a one-line comment why. Add default-build tests for the clean values where a property is testable (rate periods strictly increasing; breakpoints give a monotone falling envelope; noise output stays within 12 bits). Any test that asserts behaviour every SID must have and fails in the default build means a default is wrong: fix the default.
+
+- [ ] **Step 5d: (verification happens in Steps 6-7 below)**
+
+- [ ] **Step 5e: Record in docs/provenance.md** (committed together with Step 8)
+
+Add to `docs/provenance.md` a "Clean-room defaults" table (constant, value, source/derivation) and mark the nine rows' resolution as "values moved to sid-gpl-data; clean-room default in mos6581". Commit:
+
+```bash
+# no separate commit: Step 8 commits crates/ and docs/provenance.md together
+```
+
 - [ ] **Step 6: Run both configurations**
 
 ```bash
@@ -684,15 +802,15 @@ Expected: three `OK`; the default render completes with a non-zero chip-write co
 - [ ] **Step 8: Commit**
 
 ```bash
-git add -A crates Cargo.lock
-git commit -m "feat: gpl-data feature, off by default, with GPL-free built-in tables"
+git add -A crates Cargo.lock docs/provenance.md
+git commit -m "feat: gpl-data feature, off by default, with GPL-free built-in data"
 ```
 
 ---
 
 ### Task 5: Relicense, fidelity-gap script, documentation
 
-Precondition: `docs/provenance.md` has no unresolved **Borrowed** row outside `sid-gpl-data`.
+Precondition: `docs/provenance.md` has no unresolved **Borrowed** row outside `sid-gpl-data`, and every moved item has a clean-room default.
 
 **Files:**
 - Create: `crates/{mos6581,sid-play}/{LICENSE-MIT,LICENSE-APACHE,README.md}`, `crates/sid-play/scripts/fidelity-gap.sh`, `crates/sid-play/scripts/tonality.py`
