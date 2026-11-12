@@ -110,7 +110,7 @@ impl Wave {
             self.msb_rising = (self.previous & ACC_MSB) == 0 && (self.accumulator & ACC_MSB) != 0;
         }
 
-        // The noise register is clocked by bit 19 of the accumulator going high,
+        // The noise register is clocked by the rising edge of `NOISE_CLOCK`,
         // so the frequency register sets the noise rate.
         if (self.previous & NOISE_CLOCK) == 0 && (self.accumulator & NOISE_CLOCK) != 0 {
             let bit0 = ((self.shift >> 22) ^ (self.shift >> 17)) & 1;

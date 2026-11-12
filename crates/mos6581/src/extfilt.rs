@@ -3,9 +3,10 @@
 
 use crate::chip_data;
 
-/// Low-pass pole, rad/s.
+/// Low-pass pole, rad/s, from the C64 audio output stage: R = 10 kΩ with C = 1 nF
+/// (board 250466, R30/C54).
 const W0_LOW: f64 = chip_data::EXTFILT_W0_LOW;
-/// High-pass pole, rad/s.
+/// High-pass pole, rad/s: R = 1 kΩ with the 10 µF coupling capacitor (C55).
 const W0_HIGH: f64 = chip_data::EXTFILT_W0_HIGH;
 /// The poles above are in rad/s and the chip is clocked at roughly 1e6 Hz, so
 /// one cycle advances the network by 1e-6 seconds.

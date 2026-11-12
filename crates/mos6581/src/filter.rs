@@ -60,7 +60,7 @@ impl Filter {
 
     /// Resonance nibble to the damping coefficient the difference equation
     /// needs, which is `1/Q` rather than `Q`: Q runs from its minimum at no resonance
-    /// to 1.707 at full, so the coefficient shrinks as resonance is added.
+    /// to its maximum at full, so the coefficient shrinks as resonance is added.
     /// Inverting this makes the filter *quieter* as resonance increases.
     pub fn set_resonance(&mut self, res: u8) {
         self.inv_q =
