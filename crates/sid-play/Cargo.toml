@@ -15,7 +15,7 @@ exclude = ["scripts/"]
 
 [dependencies]
 mos6510 = "0.1"
-mos6581 = "0.2"
+mos6581 = "0.3"
 cpal = { version = "0.18.2", optional = true }
 
 [features]

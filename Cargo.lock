@@ -280,9 +280,9 @@ checksum = "9612d313617edd0a032e922a09cdc9ba7492bc373b357b745b2c166ae0a00fbd"
 
 [[package]]
 name = "mos6581"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49c05cbce3b0d83f8eec9280c0735e1d74ccecf12d693f58081b2d63bb341569"
+checksum = "fc63d0600fe0a201aea3e761e7a4af0ffdfd078ce92ade97ada6c9e3afc4af47"
 
 [[package]]
 name = "ndk"
