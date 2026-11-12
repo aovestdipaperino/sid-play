@@ -1,6 +1,6 @@
 # mos6510 — a cycle-exact, permissively licensed 6510 core
 
-Date: 2026-11-12. Status: approved design, awaiting implementation plan.
+Date: 2026-11-12. Status: approved design; amended after research (see git history); plan in `docs/superpowers/plans/2026-11-12-mos6510-core.md`.
 
 ## Why
 
@@ -91,13 +91,21 @@ impl Cpu {
     /// What external circuitry pulls the port pins to (default: all high).
     pub fn set_port_input(&mut self, pins: u8);
     /// Start executing at `pc` on the next tick, abandoning any instruction in
-    /// progress. For hosts that call routines directly (a PSID harness).
+    /// progress (and a pending reset). For hosts that call routines directly.
     pub fn jump(&mut self, pc: u16);
+    /// At a boundary: the next tick begins an interrupt sequence rather than
+    /// an opcode fetch. Lets a host count interrupts actually taken.
+    pub fn interrupt_pending(&self) -> bool;
+    /// Load the port's direction and data registers directly, for a host that
+    /// starts a program without running the Kernal that would set them.
+    pub fn set_port_registers(&mut self, ddr: u8, data: u8);
 }
 ```
 
-The register fields are public so a host can set up a call. `p` always reads
-with bit 5 set; B exists only on the stack.
+The register fields are public so a host can set up a call. Status-register
+conventions follow Harte's data: bit 5 of `p` stays set; B in `p` is left alone
+by everything except `PLP`/`RTI`, which clear it; `PHP`/`BRK` push `p | $30`;
+interrupt entry pushes `(p & !$10) | $20`.
 
 ## Behaviour to get right
 
@@ -118,11 +126,15 @@ flags come from the binary result. Invalid BCD inputs follow the same formulas
 
 **Undocumented opcodes.** Stable: `SLO RLA SRE RRA SAX LAX DCP ISC ANC ALR ARR
 SBX`, `SBC #` at `$EB`, and the multi-byte NOPs (with their dummy reads).
-Unstable: `ANE`/`LXA` use a magic constant exposed as a documented `pub const`
-whose value is whatever makes Harte's data pass; `SHA SHX SHY TAS` use the
-"AND with high byte + 1" store, with the address corruption on page crossing;
-`LAS` as documented. JAM (`$02 $12 ...`) halts with the bus behaviour Harte's
-data records, and `jammed()` turns true.
+Unstable: `ANE` computes `(A | M) & X & imm` and `LXA` `(A | M) & imm`, with
+the magic constant `M = $EE` exposed as `pub const UNSTABLE_MAGIC` (verified
+against all 20,000 Harte cases for `$8B`/`$AB`). `SHA SHX SHY TAS` store
+`reg & (H + 1)` where H is the high byte of the address before indexing; on a
+page crossing that value also replaces the address high byte (verified on
+`$9C`). `LAS` as documented. JAM halts: after the fetch it reads PC, then
+`$FFFF`, `$FFFE`, `$FFFE`, then `$FFFF` forever (Harte's `$02` trace), and
+`jammed()` turns true. Decimal `ADC`/`SBC`/`ARR` formulas in the plan were
+checked against Harte's `$69`, `$E9` and `$6B` files, 0 mismatches.
 
 **The I/O port (Mos6510 only).** `$00` is the data direction register and `$01`
 the data register. Reads of `$00`/`$01` return the registers (input bits come
@@ -132,8 +144,9 @@ DDR `$00`, data `$00` (all inputs, so the pins read as pulled high).
 
 ## Internal structure
 
-- `lib.rs`: `Cpu`, `Bus`, `Model`, the public API, `tick` dispatch.
-- `sequence.rs`: the cycle sequences. One per addressing mode × access kind
+- `lib.rs`: `Cpu`, `Bus`, `Model`, the public API, `tick` dispatch, and the
+  cycle sequences as `impl Cpu` methods (they need its private state; a
+  separate file would not buy a cleaner boundary). One per addressing mode × access kind
   (read, write, read-modify-write) for implied/accumulator, immediate, zp, zp,X,
   zp,Y, abs, abs,X, abs,Y, (zp,X), (zp),Y, plus hand-written sequences for
   relative branches, `PHA PHP PLA PLP`, `JSR RTS RTI`, `JMP abs`, `JMP (ind)`
@@ -158,11 +171,16 @@ Expected size about 900 lines of source excluding tests.
    (~1.3 GB) is fetched by `scripts/fetch-harte.sh` into a cache directory
    given by `HARTE_DIR`; with the variable unset or the directory missing, the
    test prints that it is skipped and passes. `serde_json` is a dev-dependency.
+   Both fetch scripts default to `target/test-data/` inside the crate, which
+   git already ignores.
    The test reports per-opcode failure counts and the first failing case.
-2. **Klaus Dormann** (`tests/klaus.rs`): functional and decimal tests, binaries
-   fetched by `scripts/fetch-klaus.sh` into `KLAUS_DIR`, skipped when absent,
-   same as above. Pass means reaching the documented success trap. This
-   replaces `rust-sid/examples/cpu_conformance.rs`.
+2. **Klaus Dormann** (`tests/klaus.rs`): the functional test, binary fetched by
+   `scripts/fetch-klaus.sh` into `KLAUS_DIR`, skipped when absent, same as
+   above. Pass means reaching the success trap `$3469`. The decimal test has
+   no prebuilt binary upstream (it would need the author's assembler), so
+   decimal mode is covered by Harte instead: about 5,000 of the 10,000 cases
+   for each of `ADC SBC ISC RRA ARR` run with D set, with arbitrary operands.
+   This replaces `rust-sid/examples/cpu_conformance.rs`.
 3. **Unit tests** for what neither suite covers: the interrupt timing rules
    above (IRQ around `CLI`/`SEI`/`PLP`, the taken-branch delay, NMI hijacking
    `BRK`, level-triggered IRQ re-entering after `RTI` while still asserted, NMI
@@ -174,13 +192,16 @@ Expected size about 900 lines of source excluding tests.
 
 - `rust-sid/Cargo.toml`: replace dev-dependency `lib6502` with
   `mos6510 = { path = "../mos6510" }`.
-- `examples/render.rs`: `Cpu::new(Model::Mos6510)`; the harness's
-  `irq_entry` goes away and the CIA line feeds `cpu.set_irq(...)` each tick;
-  `Machine` implements `Bus` directly with `&mut self`, dropping the
-  `Cell`/`RefCell` plumbing that existed only because `lib6502`'s `read` took
-  `&self`. Frame-clock entry into the play stub uses `cpu.jump(...)` at an
-  instruction boundary. `cpu.cycles == 0` checks become
-  `cpu.at_instruction_boundary()`.
+- `examples/render.rs`: `Cpu::new(Model::Mos6510)` with the port set to the
+  Kernal's `$2F`/`$37` and input pins `$10` (cassette sense high, bits 6-7
+  faded low), so `$01` reads `$37` as on a real C64. The harness's `irq_entry`
+  goes away and the CIA line feeds `cpu.set_irq(...)` each tick; the "IRQs
+  taken" count uses `interrupt_pending()` at boundaries, so it still counts
+  interrupts the CPU actually took (the irq fixture test depends on that).
+  `BusHandle` implements the new `Bus`; `Machine` keeps its `Rc<RefCell<..>>`
+  sharing, which the harness still needs for the chip and the trace. Frame-clock
+  entry into the play stub uses `cpu.jump(...)` at an instruction boundary.
+  `cpu.cycles == 0` checks become `cpu.at_instruction_boundary()`.
 - The trace's stubbed-opcode counter is removed (nothing is stubbed any more).
 - Delete `examples/render/cpu_fixups.rs`, `examples/cpu_conformance.rs` and the
   `NO_FIXUPS` switch.
