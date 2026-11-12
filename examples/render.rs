@@ -15,6 +15,7 @@ use lib6502::bus::Bus;
 use rust_sid::sink::{SampleFormat, Sink, WavSink, WavSpec};
 use rust_sid::{Model, Sid};
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
@@ -71,6 +72,112 @@ const U_FLAG: u8 = 0x20;
 const IRQ_CYCLES: u8 = 7;
 /// The stack lives on page 1.
 const STACK_PAGE: u16 = 0x0100;
+/// The two ROM areas. With no ROM image installed these read as zeros, so a tune
+/// that reaches them executes nothing.
+const ROM_BASIC: (u16, u16) = (0xa000, 0xbfff);
+const ROM_KERNAL: (u16, u16) = (0xe000, 0xffff);
+/// The RAM copy of the interrupt vectors a tune may rewrite, and the vectors
+/// themselves.
+const VEC_RAM: (u16, u16) = (0x0314, 0x0319);
+const VEC_ROM: (u16, u16) = (0xfffa, 0xffff);
+/// How many distinct sites `--trace` remembers before it stops widening its
+/// tables. Counts for sites already recorded keep accumulating.
+const TRACE_LIMIT: usize = 400;
+
+fn in_range(addr: u16, range: (u16, u16)) -> bool {
+    addr >= range.0 && addr <= range.1
+}
+
+/// Which half of the tune's life a recorded cycle belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Init,
+    Run,
+}
+
+/// Where the tune actually went, recorded only when `--trace` is given.
+///
+/// The point is attribution: a tune that produces nothing is either calling into
+/// a ROM area that holds no ROM, or it is not calling what we think it is. Those
+/// need different fixes, and the only way to tell them apart is to record the
+/// addresses rather than reason about them.
+#[derive(Debug)]
+struct Trace {
+    enabled: bool,
+    phase: Phase,
+    /// The last program counter seen, so a jump into a ROM area can be traced
+    /// back to the instruction that made it.
+    prev_pc: u16,
+    rom_exec: BTreeMap<u16, u64>,
+    /// (caller, callee) pairs for transfers into a ROM area.
+    rom_edges: BTreeMap<(u16, u16), u64>,
+    /// Whether the byte at that ROM address was zero: a real entry point has an
+    /// opcode there, a tune that wandered off has nothing.
+    rom_zero: BTreeMap<u16, bool>,
+    /// Where time went outside the ROM areas, to localise a play routine that
+    /// never returns.
+    run_pc: BTreeMap<u16, u64>,
+    init_cycles: u64,
+    init_returned: bool,
+}
+
+impl Trace {
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            phase: Phase::Init,
+            prev_pc: 0,
+            rom_exec: BTreeMap::new(),
+            rom_edges: BTreeMap::new(),
+            rom_zero: BTreeMap::new(),
+            run_pc: BTreeMap::new(),
+            init_cycles: 0,
+            init_returned: false,
+        }
+    }
+
+    fn note(&mut self, pc: u16, ram: &[u8; 0x1_0000]) {
+        if !self.enabled {
+            return;
+        }
+        if self.phase == Phase::Init {
+            self.init_cycles += 1;
+        }
+        if in_range(pc, ROM_BASIC) || in_range(pc, ROM_KERNAL) {
+            *self.rom_exec.entry(pc).or_insert(0) += 1;
+            if self.rom_exec.len() <= TRACE_LIMIT {
+                *self.rom_edges.entry((self.prev_pc, pc)).or_insert(0) += 1;
+                self.rom_zero.insert(pc, ram[usize::from(pc)] == 0);
+            }
+        } else if self.phase == Phase::Run && self.run_pc.len() <= TRACE_LIMIT {
+            *self.run_pc.entry(pc).or_insert(0) += 1;
+        }
+        self.prev_pc = pc;
+    }
+
+    /// The `n` entries with the highest counts, highest first.
+    fn top_v(&self, map: &BTreeMap<u16, u64>, n: usize) -> Vec<(u16, u64)> {
+        let mut v: Vec<(u16, u64)> = map.iter().map(|(k, c)| (*k, *c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
+    }
+
+    fn top_k(&self, n: usize) -> Vec<((u16, u16), u64)> {
+        let mut v: Vec<((u16, u16), u64)> = self.rom_edges.iter().map(|(k, c)| (*k, *c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
+    }
+
+    fn rom_total(&self, range: (u16, u16)) -> u64 {
+        self.rom_exec
+            .iter()
+            .filter(|(pc, _)| in_range(**pc, range))
+            .map(|(_, c)| c)
+            .sum()
+    }
+}
 
 /// The container header is 128 bytes; nothing below this is tune data.
 const HEADER_LEN: usize = 128;
@@ -368,6 +475,16 @@ struct Machine {
     /// How many writes have reached the chip. Reported in the summary as a
     /// diagnostic; it is deliberately not used to decide anything.
     sid_writes: Cell<u64>,
+    /// `--trace` only: reads from the ROM areas, and rewrites of the interrupt
+    /// vectors. Both stay empty while tracing is off.
+    trace: Cell<bool>,
+    rom_reads: RefCell<BTreeMap<u16, u64>>,
+    vector_writes: RefCell<BTreeMap<(u16, u16), u64>>,
+    /// Writes per register offset into the chip's 32-register file, and a count
+    /// of those that fell outside it. A tune writing past register 31 is being
+    /// silently ignored, and the totals alone cannot show that.
+    sid_reg_writes: RefCell<[u64; 32]>,
+    sid_oob_writes: Cell<u64>,
 }
 
 impl Machine {
@@ -377,6 +494,11 @@ impl Machine {
             sid: Sid::new(model, RATE),
             cia: RefCell::new(Cia::default()),
             sid_writes: Cell::new(0),
+            trace: Cell::new(false),
+            rom_reads: RefCell::new(BTreeMap::new()),
+            vector_writes: RefCell::new(BTreeMap::new()),
+            sid_reg_writes: RefCell::new([0; 32]),
+            sid_oob_writes: Cell::new(0),
         }
     }
 }
@@ -384,6 +506,9 @@ impl Machine {
 impl Bus for Machine {
     fn read(&self, address: u16) -> u8 {
         let a = usize::from(address);
+        if self.trace.get() && (in_range(address, ROM_BASIC) || in_range(address, ROM_KERNAL)) {
+            *self.rom_reads.borrow_mut().entry(address).or_insert(0) += 1;
+        }
         match a {
             0xd400..=0xd5ff => self.sid.read(a - 0xd400),
             0xdc00..=0xdc0f => match a - 0xdc00 {
@@ -399,10 +524,31 @@ impl Bus for Machine {
 
     fn write(&mut self, address: u16, value: u8) {
         let a = usize::from(address);
+        if self.trace.get()
+            && (in_range(address, VEC_RAM) || in_range(address, VEC_ROM))
+            && self.vector_writes.borrow().len() <= TRACE_LIMIT
+        {
+            *self
+                .vector_writes
+                .borrow_mut()
+                .entry((address, u16::from(value)))
+                .or_insert(0) += 1;
+        }
         match a {
             0xd400..=0xd5ff => {
                 self.sid_writes.set(self.sid_writes.get() + 1);
-                self.sid.write(a - 0xd400, value);
+                let reg = a - 0xd400;
+                if self.trace.get() {
+                    // `Sid::write` ignores anything past register 31, so a tune
+                    // reaching the mirrored or extended addresses is being
+                    // discarded. The totals alone cannot show that.
+                    if reg < 32 {
+                        self.sid_reg_writes.borrow_mut()[reg] += 1;
+                    } else {
+                        self.sid_oob_writes.set(self.sid_oob_writes.get() + 1);
+                    }
+                }
+                self.sid.write(reg, value);
             }
             0xdc00..=0xdc0f => match a - 0xdc00 {
                 4 | 5 => {
@@ -532,6 +678,8 @@ struct Options {
     out: PathBuf,
     /// Report the resolved header and stop, without rendering.
     probe: bool,
+    /// Record where the tune executes. Inert unless asked for.
+    trace: bool,
 }
 
 fn parse_args() -> Result<Options, Box<dyn Error>> {
@@ -542,6 +690,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
         ntsc: false,
         out: PathBuf::from("out.wav"),
         probe: false,
+        trace: false,
     };
 
     let mut args = std::env::args().skip(1);
@@ -555,6 +704,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
             "--out" => o.out = PathBuf::from(args.next().ok_or("--out needs a value")?),
             "--ntsc" => o.ntsc = true,
             "--probe" => o.probe = true,
+            "--trace" => o.trace = true,
             other => o.tune = Some(PathBuf::from(other)),
         }
     }
@@ -614,6 +764,8 @@ fn start(machine: &Rc<RefCell<Machine>>, stubs: Stubs, clock_hz: f64, song: u8) 
     // Whose handler is installed decides who drives the frame. A tune with no
     // play address at all is driven purely by its own interrupts.
     harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.halt;
+    harness.trace.init_returned = cpu.pc == stubs.halt;
+    harness.trace.phase = Phase::Run;
     (cpu, harness)
 }
 
@@ -636,6 +788,8 @@ struct Harness {
     irqs: u64,
     frames: u64,
     audio: Vec<f32>,
+    /// `--trace` only.
+    trace: Trace,
 }
 
 impl Harness {
@@ -644,6 +798,7 @@ impl Harness {
             let m = machine.borrow();
             m.ram[usize::from(stubs.play)] == 0x20
         };
+        let tracing = machine.borrow().trace.get();
         Self {
             machine,
             stubs,
@@ -656,6 +811,10 @@ impl Harness {
             irqs: 0,
             frames: 0,
             audio: Vec::with_capacity(4096),
+            trace: Trace {
+                enabled: tracing,
+                ..Trace::new()
+            },
         }
     }
 
@@ -671,6 +830,11 @@ impl Harness {
     /// it just saw. An instruction in progress always finishes, which is why the
     /// request is only offered when the processor has no cycles left to spend.
     fn cycle(&mut self, cpu: &mut Cpu) {
+        if self.trace.enabled {
+            let pc = cpu.pc;
+            let m = self.machine.borrow();
+            self.trace.note(pc, &m.ram);
+        }
         let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
             // The tune brought no handler, so the harness is the player. It
@@ -790,6 +954,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     let machine = setup(model, &loaded, pal, stubs);
+    if opts.trace {
+        machine.borrow().trace.set(true);
+    }
     let (mut cpu, mut harness) = start(&machine, stubs, clock_hz, loaded.song);
     harness.set_frame_clock(clock_hz, loaded.cia_clock, pal);
 
@@ -805,10 +972,16 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut written = 0usize;
     let mut cycles = 0u64;
+    // Only kept under `--trace`, to report what the render actually sounds like
+    // alongside where it went.
+    let mut heard: Vec<f32> = Vec::new();
     while written < total {
         harness.cycle(&mut cpu);
         cycles += 1;
         if harness.audio.len() >= 4096 {
+            if opts.trace {
+                heard.extend_from_slice(&harness.audio);
+            }
             sink.write(&harness.audio)?;
             written += harness.audio.len();
             harness.audio.clear();
@@ -849,5 +1022,92 @@ fn run() -> Result<(), Box<dyn Error>> {
         v1_ctrl,
         v1_freq,
     );
+
+    if opts.trace {
+        let rms = |v: &[f32]| -> f64 {
+            if v.is_empty() {
+                0.0
+            } else {
+                (v.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>() / v.len() as f64)
+                    .sqrt()
+            }
+        };
+        let quarter = heard.len() / 4;
+        let lastq = if quarter > 0 {
+            rms(&heard[3 * quarter..])
+        } else {
+            0.0
+        };
+        let nz = if heard.is_empty() {
+            0.0
+        } else {
+            heard.iter().filter(|&&s| s != 0.0).count() as f64 / heard.len() as f64
+        };
+        let m = machine.borrow();
+        let t = &harness.trace;
+        // Every register that can silence a voice: the three waveform/gate
+        // controls, the filter routing, and the master volume with its taps.
+        let (v2_ctrl, v3_ctrl, routing) = (m.sid.read(11), m.sid.read(18), m.sid.read(23));
+        let regw: String = m
+            .sid_reg_writes
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c > 0)
+            .map(|(r, &c)| format!("{r}:{c}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "TRACE heard={:.4} lastq={:.4} nz={:.2} init_returned={} init_cycles={} romexec_basic={} romexec_kernal={} romreads={} vecwrites={} irqs={} frames={} writes={} oob={} regw={} d418=${:02X} d417=${:02X} d404=${:02X} d40b=${:02X} d412=${:02X} freq={}",
+            rms(&heard),
+            lastq,
+            nz,
+            u8::from(t.init_returned),
+            t.init_cycles,
+            t.rom_total(ROM_BASIC),
+            t.rom_total(ROM_KERNAL),
+            m.rom_reads.borrow().values().sum::<u64>(),
+            m.vector_writes.borrow().values().sum::<u64>(),
+            harness.irqs,
+            harness.frames,
+            render_writes,
+            m.sid_oob_writes.get(),
+            regw,
+            mode_vol,
+            routing,
+            v1_ctrl,
+            v2_ctrl,
+            v3_ctrl,
+            v1_freq,
+        );
+        for (pc, c) in t.top_v(&t.rom_exec, 5) {
+            println!(
+                "TRACE exec ${pc:04X} n={c} zero={}",
+                u8::from(t.rom_zero.get(&pc).copied().unwrap_or(true))
+            );
+        }
+        for ((from, to), c) in t.top_k(5) {
+            println!("TRACE edge ${from:04X}->${to:04X} n={c}");
+        }
+        let mut reads: Vec<(u16, u64)> =
+            m.rom_reads.borrow().iter().map(|(k, v)| (*k, *v)).collect();
+        reads.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (a, c) in reads.into_iter().take(5) {
+            println!("TRACE romread ${a:04X} n={c}");
+        }
+        for (pc, c) in t.top_v(&t.run_pc, 5) {
+            println!("TRACE runpc ${pc:04X} n={c}");
+        }
+        let mut vecs: Vec<((u16, u16), u64)> = m
+            .vector_writes
+            .borrow()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        vecs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for ((a, v), c) in vecs.into_iter().take(8) {
+            println!("TRACE vecwrite ${a:04X}=${v:02X} n={c}");
+        }
+    }
     Ok(())
 }
