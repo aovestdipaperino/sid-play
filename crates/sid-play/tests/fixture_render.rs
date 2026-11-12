@@ -14,11 +14,11 @@ use std::process::Command;
 #[cfg(feature = "gpl-data")]
 const MIN_RMS: f64 = 500.0;
 #[cfg(not(feature = "gpl-data"))]
-const MIN_RMS: f64 = 26.0; // observed 53
+const MIN_RMS: f64 = 830.0; // observed 1668
 #[cfg(feature = "gpl-data")]
 const MIN_TAIL_RMS: f64 = 300.0;
 #[cfg(not(feature = "gpl-data"))]
-const MIN_TAIL_RMS: f64 = 13.0; // observed 27
+const MIN_TAIL_RMS: f64 = 640.0; // observed 1278
 
 fn harness() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_render"))
