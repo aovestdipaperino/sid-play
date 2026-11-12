@@ -1,6 +1,6 @@
 # mos6510 — a cycle-exact, permissively licensed 6510 core
 
-Date: 2026-11-12. Status: approved design; amended after research (see git history); plan in `docs/superpowers/plans/2026-11-12-mos6510-core.md`.
+Date: 2026-11-12. Status: implemented; see the plan and HANDSOFF.md.
 
 ## Why
 

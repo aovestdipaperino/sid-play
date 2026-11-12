@@ -5,14 +5,38 @@ Branch `feat/faithful-chip`. 7 test targets green (91 tests),
 both clean.
 
 > **Update 2026-11-12: the silent-tune problem was the CPU, not the tunes.**
-> `lib6502` 0.2.2 fails Klaus Dormann's 6502 functional test early: `(zp),Y`
-> never adds Y, binary `ADC`/`SBC` never set C/N/V, `SBC` subtracts the carry
-> instead of the borrow, and `PHP`/`BRK` push a corrupted status byte.
-> `examples/render/cpu_fixups.rs` executes those instructions correctly; with it,
-> **16/16 PSIDs play** (previously 3). The CPU still fails the test further on
-> (next: `LSR A` flags at `$230C`), so more defects remain. See "CPU defects"
-> below. Sections further down that say the tunes "decided not to play" are
+> `lib6502` was the cause. It has been replaced by the sibling crate
+> `../mos6510` (cycle-exact NMOS 6510, MIT OR Apache-2.0, passes Tom Harte's
+> SingleStepTests 256/256 and Klaus Dormann's functional test). The CIA now
+> drives the CPU's IRQ pin, and the 6510 port starts as the Kernal leaves it.
+> Coverage: **16/16 corpus PSIDs plus Last Ninja play tonal audio** (10 s
+> renders, autocorrelation medians 0.40 to 0.89). "Old" is the CPU with a
+> partial instruction-fix layer; before any fix, 13 of the 16 were silent.
+> No tune fell below 0.40; `Axel_F` sits right at it. Slightly lower than
+> before: 4_Soccer_Sims, 5_Title_Tunes, ACE_II, All_Terrain_Vehicle,
+> Alternative_World_Games and Axel_F (the largest drop is 0.08).
+> Sections further down that say the tunes "decided not to play" are
 > superseded.
+
+| Tune | Old median | New median | New min |
+|---|---|---|---|
+| 05-09-87 | 0.61 | 0.62 | 0.48 |
+| 4_Soccer_Sims_Soccer_Skills | 0.68 | 0.66 | 0.52 |
+| 5_Title_Tunes | 0.72 | 0.71 | 0.66 |
+| 64_Dwarfs_on_XTC | 0.88 | 0.89 | 0.70 |
+| 720_Degrees | 0.83 | 0.84 | 0.62 |
+| ACE_II | 0.67 | 0.66 | 0.45 |
+| Acceleration-mix | 0.53 | 0.60 | 0.44 |
+| Action_Biker | 0.68 | 0.78 | 0.48 |
+| All_Points_Bulletin | 0.74 | 0.74 | 0.55 |
+| All_Terrain_Vehicle_Simulator | 0.77 | 0.69 | 0.64 |
+| Alternative_World_Games | 0.71 | 0.70 | 0.70 |
+| Antics | 0.87 | 0.87 | 0.73 |
+| Ark_Pandora | 0.47 | 0.51 | 0.24 |
+| Artura | 0.80 | 0.80 | 0.75 |
+| Athena | 0.62 | 0.62 | 0.53 |
+| Axel_F | 0.41 | 0.40 | 0.12 |
+| last_ninja | n/a | 0.58 | 0.58 |
 
 ## What this is
 
@@ -20,16 +44,15 @@ A MOS 6581 SID chip emulator in Rust, cycle-accurate at the Φ2 rate, plus a
 PSID harness that runs a tune's 6510 code and renders it through the chip to a
 WAV file.
 
-The library is the chip only — no CPU, no memory map, no player. `mos6502` and
-`lib6502` are dev-dependencies used by the example and tests.
+The library is the chip only — no CPU, no memory map, no player. The CPU is the
+sibling crate `../mos6510`, a dev-dependency used by the example and tests.
 
 ```
 src/            1929 lines   the chip: wave, envelope, voice, filter, extfilt,
                              resample, sink, sid, tables (generated)
 tests/          1532 lines   behavioural tests per component + fixture renders
 examples/render.rs ~1200     PSID loader + 6510 harness + trace diagnostics
-examples/render/cpu_fixups.rs  correct execution of instructions lib6502 breaks
-examples/cpu_conformance.rs    runs Klaus Dormann's functional test on lib6502
+../mos6510/  the CPU core (separate crate and repository)
 docs/superpowers/specs/      the design spec
 docs/superpowers/plans/      plan 1 (faithful chip)
 .superpowers/sdd/            task briefs, reports, review packages, ledger
@@ -47,7 +70,8 @@ cargo run --release --example render -- tune.sid --seconds 5 --out /tmp/x.wav --
 `--trace` is inert unless passed. It prints one `TRACE heard=...` summary line
 plus per-site detail: ROM-area executions, ROM reads, vector rewrites, a
 per-register SID write histogram, an out-of-range write count, and every address
-read after init returned (marked in-block or not).
+read after init returned (marked in-block or not). Site stats are recorded at
+instruction boundaries.
 
 ## What is verified working
 
@@ -69,15 +93,10 @@ Three real tunes render sustained tonal audio: `Action_Biker`, `5_Title_Tunes`,
 
 ## CPU defects in lib6502 0.2.2
 
-Found with `examples/cpu_conformance.rs` against Klaus Dormann's
-`6502_functional_test.bin` (fetch it from
-github.com/Klaus2m5/6502_65C02_functional_tests, `bin_files/`; success trap is
-`$3469` for that build):
+Historical: rust-sid no longer uses lib6502 (see `../mos6510`).
 
-```sh
-cargo run --release --example cpu_conformance -- 6502_functional_test.bin 3469
-PATCH=1 cargo run --release --example cpu_conformance -- 6502_functional_test.bin 3469
-```
+Found with a harness that ran Klaus Dormann's `6502_functional_test.bin` on
+lib6502 (the harness has since been removed):
 
 Without `PATCH` it traps at `$0674`; with it, at `$230C`. Worked around so far:
 
@@ -94,9 +113,6 @@ Without `PATCH` it traps at `$0674`; with it, at `$230C`. Worked around so far:
 Not yet worked around: whatever lies past `$230C` (shift/rotate flags first).
 `clock()` also calls `disassemble_instruction_at` on every instruction, which
 allocates a `String` and reads the operand bytes through the bus.
-
-The renderer applies the fixups unless `NO_FIXUPS` is set, which keeps the old
-behaviour available for A/B comparison.
 
 ## What does not work — the honest coverage number
 
@@ -123,8 +139,8 @@ The 13 failures are not one findable bug. See the investigation log below.
 - `examples/render/poweron_table.rs` is derived from libsidplayfp's
   `poweron.bin` capture (also GPL-2.0) and is **byte-identical to it across all
   1024 addresses**.
-- The library keeps **zero runtime dependencies**. `lib6502` and `mos6502` are
-  dev-dependencies only.
+- The library keeps **zero runtime dependencies**. `mos6510` is a
+  dev-dependency only.
 
 ## Upstream bug filed
 
@@ -135,10 +151,12 @@ stacked P carries `I = 1`, every `RTI` restores interrupts masked, and only one
 interrupt can ever be taken. It also clears I for the handler (hardware leaves
 it set) and pushes B set for a hardware IRQ (B=1 distinguishes BRK).
 
-**Consequence: never call `cpu.irq()`.** `examples/render.rs` performs the
+**Consequence (historical): never call `cpu.irq()`.** `examples/render.rs` performs the
 interrupt entry by hand (`irq_entry`) using lib6502's public `pc`, `sp`,
 `status` and `cycles` fields. The repo has 0 stars and last saw a push in
 October 2024 — do not plan around a fix landing.
+
+rust-sid no longer depends on lib6502, so issue #4 is history.
 
 ## Investigation log: why 13 PSIDs are silent
 
@@ -217,16 +235,15 @@ From the review ledger (`.superpowers/sdd/progress.md`), none blocking:
 
 ## Next steps, ranked
 
-*Revised 2026-11-12, replacing the list kept below for the record:*
+*Revised 2026-11-12 after the mos6510 switch:*
 
-1. **Replace `lib6502`.** Patching it instruction by instruction is whack-a-mole
-   and the conformance test still fails. Either write an NMOS 6510 core in the
-   harness (small, and it gives exact cycles, correct IRQ entry and the
-   undocumented opcodes) or adopt a crate that passes Klaus Dormann's functional
-   and decimal tests. The acceptance gate is that test passing, plus the corpus.
-2. Re-check `Axel_F` (0.41) and `Ark_Pandora` (0.47), the least tonal renders,
-   once the CPU passes the test.
-3. Report the defects upstream on lib6502 issue #4 or a new issue.
+1. **Listen to the renders.** Tonality only shows the tunes play; it does not
+   show they are right. Per-tune listening checks, starting with `Axel_F` (0.40)
+   and `Ark_Pandora` (0.51, min 0.24).
+2. **Compare register writes against a reference player** (libsidplayfp built
+   locally) for a few tunes.
+3. RSID support needs the ROMs and a fuller machine; still out of scope.
+4. Widen the corpus beyond six composers.
 
 *Original list:*
 
