@@ -8,4 +8,6 @@
 
 #[doc(hidden)]
 pub mod poweron;
+#[doc(hidden)]
+pub mod poweron_clean;
 pub mod sink;

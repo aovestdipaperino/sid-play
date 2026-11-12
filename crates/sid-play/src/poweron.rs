@@ -1,9 +1,9 @@
 //! The RAM pattern at `$0000-$03FF` before a tune's init runs.
 
-/// The clean-room image, compiled in every build so it can be compared with the
-/// measured one. Today: zeros; the harness still writes the Kernal pointers it
-/// sets for every tune.
-pub const CLEAN_POWERON: [u8; 0x0400] = [0; 0x0400];
+/// The clean-room documented power-on image, compiled in every build so it can
+/// be compared with the measured one. The harness still writes its per-tune
+/// Kernal pointers on top of it.
+pub const CLEAN_POWERON: [u8; 0x0400] = crate::poweron_clean::POWERON;
 
 /// With `gpl-data`: libsidplayfp's captured pattern (GPL-2.0, via
 /// `sid-gpl-data`). Without it: [`CLEAN_POWERON`].
