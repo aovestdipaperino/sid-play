@@ -3,8 +3,10 @@
 //! The processor runs one Φ2 cycle at a time and the chip is rendered alongside
 //! it, so a register write lands in the same cycle the tune wrote it. The tune's
 //! own code owns everything it was loaded over, so the harness keeps its
-//! footprint to the top of the last page: call stubs, an interrupt handler for
-//! tunes that do not install one, and a halt loop, all above $ffe0.
+//! footprint small and out of the tune's way: call stubs, a halt loop and a
+//! KERNAL-like interrupt chain in one page the tune's block leaves free, plus
+//! the KERNAL's own chain entry points at $EA31 and $EA7E-$EA86 when the
+//! block does not cover them.
 //!
 //! `cargo run --release -p sid-play --bin render -- tune.sid [--subsong N] [--seconds S]
 //!         [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio] [--out file.wav]`
@@ -24,20 +26,38 @@ use std::rc::Rc;
 
 const RATE: f64 = 44_100.0;
 
-/// Where the harness put its own three-byte and six-byte footprints. A tune
-/// loaded at $E000 expects the whole top of memory as RAM, so these cannot live
-/// at a fixed address; they are placed in a page the tune's own block leaves
-/// free.
+/// Where the harness put its own small routines. A tune loaded at $E000
+/// expects the whole top of memory as RAM, so these cannot live at a fixed
+/// address; they are placed in a page the tune's own block leaves free.
 #[derive(Debug, Clone, Copy)]
 struct Stubs {
     init: u16,
     play: u16,
     halt: u16,
-    /// The default interrupt handler: acknowledge CIA 1 and return.
-    irq: u16,
+    /// Where the hardware IRQ vector points: save A, X and Y, then
+    /// `JMP ($0314)`, as the KERNAL's entry at $FF48 does.
+    entry: u16,
+    /// Where $0314 points by default: acknowledge CIA 1, restore the registers
+    /// and return, as the KERNAL's handler ends ($EA7E-$EA86).
+    ack: u16,
+    /// True when the tune's block leaves $EA31-$EA86 free, so the KERNAL's
+    /// own chain entry points can be laid down there for handlers that end
+    /// with `JMP $EA31` or `JMP $EA81`.
+    kernal_chain: bool,
 }
 
-const STUB_SPAN: usize = 0x20;
+/// Five slots of 8 bytes: init and play call stubs (6 bytes each), the halt
+/// loop (3), the IRQ entry (8) and the default handler (9, so it takes the
+/// last slot and a byte of the sixth).
+const STUB_SPAN: usize = 0x30;
+
+/// The KERNAL's IRQ handler entry ($EA31) and the part of it that acknowledges
+/// CIA 1 and restores the registers ($EA7E-$EA86). See [`write_kernal_chain`].
+const KERNAL_IRQ: u16 = 0xea31;
+const KERNAL_IRQ_END: u16 = 0xea7e;
+const KERNAL_IRQ_RESTORE: u16 = 0xea81;
+/// $0314-$0315, CINV: the RAM vector the KERNAL's IRQ entry jumps through.
+const CINV: u16 = 0x0314;
 
 /// Find a page the tune's block does not occupy, to hold the harness's stubs.
 ///
@@ -46,6 +66,8 @@ const STUB_SPAN: usize = 0x20;
 fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
     let lo = usize::from(load);
     let hi = lo + len;
+    // $EA31 up to and including the RTI at $EA86.
+    let kernal_chain = hi <= usize::from(KERNAL_IRQ) || lo > 0xea86;
     let mut page = 0x0400u16;
     while usize::from(page) + STUB_SPAN <= 0xd000 {
         let p = usize::from(page);
@@ -54,7 +76,9 @@ fn place_stubs(load: u16, len: usize) -> Option<Stubs> {
                 init: page,
                 play: page + 8,
                 halt: page + 16,
-                irq: page + 24,
+                entry: page + 24,
+                ack: page + 32,
+                kernal_chain,
             });
         }
         page += 0x100;
@@ -215,14 +239,24 @@ impl Trace {
     }
 }
 
-/// The container header is 128 bytes; nothing below this is tune data.
-const HEADER_LEN: usize = 128;
+/// The header's fixed size by version. The PSID format (HVSC
+/// `SID_file_format.txt`, field `dataOffset` at +06): "Because the header has
+/// a fixed size, this value is 0x0076 for version 1 or 0x007C for versions 2
+/// through 5." A file needs no more than that before its data block.
+const HEADER_LEN_V1: usize = 0x76;
+const HEADER_LEN_V2: usize = 0x7c;
 
 /// Why a container was refused. A malformed file is always an error with a named
 /// reason, never a guess at a placement and never a panic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PsidError {
     NotPsid,
+    /// The file ends inside the header its version declares.
+    ShortHeader {
+        version: u16,
+        need: usize,
+        file_len: usize,
+    },
     Truncated {
         data_off: usize,
         file_len: usize,
@@ -261,6 +295,14 @@ impl fmt::Display for PsidError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotPsid => write!(f, "not a PSID file"),
+            Self::ShortHeader {
+                version,
+                need,
+                file_len,
+            } => write!(
+                f,
+                "truncated: a v{version} header is {need} bytes but the file is only {file_len} bytes"
+            ),
             Self::Truncated { data_off, file_len } => write!(
                 f,
                 "truncated: data starts at file offset {data_off} but the file is only {file_len} bytes"
@@ -327,12 +369,24 @@ struct Loaded {
 }
 
 fn parse(bytes: &[u8]) -> Result<Psid, PsidError> {
-    if bytes.len() < HEADER_LEN || &bytes[0..4] != b"PSID" {
+    if bytes.len() < 6 || &bytes[0..4] != b"PSID" {
         return Err(PsidError::NotPsid);
     }
     let u16be = |o: usize| u16::from_be_bytes([bytes[o], bytes[o + 1]]);
     let u32be = |o: usize| u32::from_be_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
     let version = u16be(0x04);
+    let need = if version >= 2 {
+        HEADER_LEN_V2
+    } else {
+        HEADER_LEN_V1
+    };
+    if bytes.len() < need {
+        return Err(PsidError::ShortHeader {
+            version,
+            need,
+            file_len: bytes.len(),
+        });
+    }
     Ok(Psid {
         version,
         data_off: usize::from(u16be(0x06)),
@@ -362,19 +416,26 @@ fn resolve(psid: &Psid, bytes: &[u8], wanted: Option<u8>) -> Result<Loaded, Psid
         });
     }
     let mut block = &bytes[psid.data_off..];
-    if block.len() < 2 {
-        return Err(PsidError::Empty);
-    }
 
     let le16 = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]);
     let mut load = psid.load;
     if load == 0 {
+        // The format: the block's first two bytes are the load address, so a
+        // block shorter than that holds no tune at all.
+        if block.len() < 2 {
+            return Err(PsidError::Empty);
+        }
         load = le16(block);
         block = &block[2..];
-    } else if le16(block) == load.wrapping_add(2) {
+    } else if block.len() > 2 && le16(block) == load.wrapping_add(2) {
         // The block carries its own address prefix even though the header gave an
         // address, so it is placed two bytes further in than the header implies.
+        // A block of two bytes or fewer is taken as code: stripping would leave
+        // nothing to load.
         block = &block[2..];
+    }
+    if block.is_empty() {
+        return Err(PsidError::Empty);
     }
 
     let init = if psid.init == 0 { load } else { psid.init };
@@ -430,10 +491,11 @@ fn resolve(psid: &Psid, bytes: &[u8], wanted: Option<u8>) -> Result<Loaded, Psid
 /// CIA 1 timer A, modelled to the point where it can raise an interrupt.
 ///
 /// Only what a tune can observe is implemented: the latch, the control
-/// register's start bit, and the interrupt control register with its read-to-
-/// clear behaviour. The control register's other bits — port B latching, the TOD
-/// and serial sources, PB7 output — are stored but have no effect, because this
-/// harness has no port B and no clock.
+/// register's start bit and force-load strobe, and the interrupt control
+/// register with its read-to-clear behaviour. The control register's other
+/// bits — port B output, one-shot mode, the CNT and serial sources, the TOD
+/// frequency — are stored but have no effect, because this harness has no
+/// port B and no clock.
 #[derive(Default)]
 struct Cia {
     latch: u16,
@@ -443,14 +505,21 @@ struct Cia {
     flags: u8,
     /// Which flags are allowed to pull the interrupt line.
     mask: u8,
-    /// True once a tune has started the timer through $DC0E. Only a VBL-speed
-    /// song consults it; a CIA-speed song is always played on timer A.
-    started: bool,
 }
+
+/// CRA bit 0, START, and bit 4, LOAD. MOS 6526 data sheet (Commodore
+/// Semiconductor Group), "Control Registers", CRA: "4 LOAD 1=FORCE LOAD (this
+/// is a STROBE input, there is no data storage, bit 4 will always read back a
+/// zero and writing a zero has no effect)". Under "Interval Timers", "Force
+/// Load": "A strobe bit allows the timer latch to be loaded into the timer
+/// counter at any time, whether the timer is running or not." Scanned copy at
+/// <https://www.zimmers.net/anonftp/pub/cbm/documents/chipdata/6526.zip>.
+const CRA_START: u8 = 0x01;
+const CRA_LOAD: u8 = 0x10;
 
 impl Cia {
     fn timer_a_running(&self) -> bool {
-        self.control & 0x01 != 0
+        self.control & CRA_START != 0
     }
 
     /// The CIA's output: asserted while any enabled flag is set.
@@ -463,18 +532,16 @@ impl Cia {
     /// the video standard, the counter loaded from it, running in continuous
     /// mode, and the timer A interrupt enabled. See [`KERNAL_TIMER_A_PAL`].
     ///
-    /// The KERNAL writes `$11` to the control register; bit 4 there is the
-    /// force-load strobe, which is acted on here by loading the counter, so
-    /// only the start bit is kept. Bit 3 clear is continuous mode, and this
-    /// model has no one-shot mode to select.
+    /// The KERNAL writes `$11` to the control register: start, and the
+    /// force-load strobe, which loads the counter. Bit 3 clear is continuous
+    /// mode, and this model has no one-shot mode to select.
     fn kernal_timer_a(&mut self, pal: bool) {
         self.latch = if pal {
             KERNAL_TIMER_A_PAL
         } else {
             KERNAL_TIMER_A_NTSC
         };
-        self.counter = self.latch;
-        self.control = 0x01;
+        self.write_control(CRA_START | CRA_LOAD);
         self.mask |= 0x01;
     }
 
@@ -519,15 +586,23 @@ impl Cia {
         }
     }
 
+    /// A write to CRA. The LOAD bit is a strobe: it is acted on and never
+    /// stored, so it reads back as 0, and with 1 it loads the counter from the
+    /// latch whether or not the timer runs (see [`CRA_LOAD`]). Loaded here, the
+    /// counter is `latch` on the cycle after the write, so the next underflow
+    /// comes latch+1 cycles after the write, the same period as after any
+    /// reload (see [`Cia::tick`]).
     fn write_control(&mut self, value: u8) {
         let was_running = self.timer_a_running();
-        self.control = value;
+        self.control = value & !CRA_LOAD;
+        if value & CRA_LOAD != 0 {
+            self.counter = self.latch;
+        }
         if self.timer_a_running() {
             if !was_running {
                 // Starting the timer loads the counter from the latch.
                 self.counter = self.latch;
             }
-            self.started = true;
         } else {
             self.counter = self.latch;
         }
@@ -695,16 +770,56 @@ fn write_halt_loop(ram: &mut [u8; 0x1_0000], halt: u16) {
     ram[s + 2] = (halt >> 8) as u8;
 }
 
-/// `PHA / LDA $DC0D / PLA / RTI`: the default interrupt handler. It does what
-/// the KERNAL's handler does about the interrupt itself, which is to read
-/// $DC0D to release the CIA's line (`KPREND LDA D1ICR`, $EA7E in the listing at
-/// <https://www.pagetable.com/c64ref/c64disasm/>), and returns to whatever was
-/// interrupted. A CIA-speed song's timer runs from before init, so an init that
-/// enables interrupts and stays busy past an underflow lands here and carries
-/// on, rather than being stranded on the halt loop with its init unfinished.
-fn write_irq_stub(ram: &mut [u8; 0x1_0000], irq: u16) {
-    let s = usize::from(irq);
-    ram[s..s + 6].copy_from_slice(&[0x48, 0xad, 0x0d, 0xdc, 0x68, 0x40]);
+/// The end of the KERNAL's IRQ handler: `LDA $DC0D / PLA / TAY / PLA / TAX /
+/// PLA / RTI`, the bytes at $EA7E-$EA86 in the commented KERNAL listing at
+/// <https://www.pagetable.com/c64ref/c64disasm/> (`KPREND LDA D1ICR ;CLEAR
+/// INTERUPT FLAGS`, then `;RESTORE REGISTERS`). Reading $DC0D releases CIA 1's
+/// line; the pulls undo the entry's pushes in reverse order.
+const ACK_AND_RETURN: [u8; 9] = [0xad, 0x0d, 0xdc, 0x68, 0xa8, 0x68, 0xaa, 0x68, 0x40];
+
+/// The IRQ entry the hardware vector leads to: `PHA / TXA / PHA / TYA / PHA /
+/// JMP ($0314)`, the KERNAL's entry at $FF48-$FF5A in the same listing
+/// (`PULS PHA`, ..., `PULS1 JMP (CINV) ;...IRQ`).
+///
+/// The KERNAL also looks at the stacked status (`LDA $104,X / AND #$10`) and
+/// sends a BRK through $0316 instead. That branch is left out: the KERNAL's
+/// BRK handler warm-starts BASIC, which this harness does not have, and a tune
+/// that executes BRK has gone wrong either way. Sending it through $0314 keeps
+/// what the harness did before for a BRK, which is to acknowledge and return.
+fn write_irq_entry(ram: &mut [u8; 0x1_0000], entry: u16) {
+    let s = usize::from(entry);
+    ram[s..s + 8].copy_from_slice(&[0x48, 0x8a, 0x48, 0x98, 0x48, 0x6c, 0x14, 0x03]);
+}
+
+/// The default handler $0314 points at: [`ACK_AND_RETURN`]. It does what the
+/// KERNAL's handler does about the interrupt itself and returns to whatever
+/// was interrupted. A CIA-speed song's timer runs from before init, so an init
+/// that enables interrupts and stays busy past an underflow passes through
+/// here and carries on, rather than being stranded with its init unfinished.
+fn write_ack_stub(ram: &mut [u8; 0x1_0000], ack: u16) {
+    let s = usize::from(ack);
+    ram[s..s + ACK_AND_RETURN.len()].copy_from_slice(&ACK_AND_RETURN);
+}
+
+/// The KERNAL's own chain entry points, for a $0314 handler that hands over to
+/// the KERNAL when it is done, as most do with `JMP $EA31` (or `JMP $EA81` to
+/// skip the acknowledge). With no ROM in this flat memory, those addresses
+/// would otherwise hold zeros, and the handler would run into a BRK.
+///
+/// $EA7E-$EA86 get the KERNAL's own bytes ([`ACK_AND_RETURN`]). $EA31 gets
+/// `JMP $EA7E`: the KERNAL's handler first updates the jiffy clock, blinks the
+/// cursor, checks the cassette and scans the keyboard (from `KEY JSR $FFEA
+/// ;UPDATE JIFFY CLOCK` at $EA31), none of which a tune can hear, and then
+/// reaches $EA7E. Laid down only when the tune's block does not cover them.
+fn write_kernal_chain(ram: &mut [u8; 0x1_0000]) {
+    let s = usize::from(KERNAL_IRQ);
+    ram[s..s + 3].copy_from_slice(&[
+        0x4c,
+        (KERNAL_IRQ_END & 0xff) as u8,
+        (KERNAL_IRQ_END >> 8) as u8,
+    ]);
+    let s = usize::from(KERNAL_IRQ_END);
+    ram[s..s + ACK_AND_RETURN.len()].copy_from_slice(&ACK_AND_RETURN);
 }
 
 /// Lay down the machine state a tune expects to find, before its init runs.
@@ -866,12 +981,23 @@ fn setup(
         if loaded.cia_clock {
             m.cia.borrow_mut().kernal_timer_a(pal);
         }
-        // Point the interrupt vector at the harness's own handler, so a tune
-        // that never installs one leaves it there and the harness can tell. A
-        // tune that does install one overwrites this and owns its own timing.
-        write_irq_stub(&mut m.ram, stubs.irq);
-        m.ram[usize::from(IRQ_VECTOR)] = (stubs.irq & 0xff) as u8;
-        m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.irq >> 8) as u8;
+        // The KERNAL's interrupt chain: the hardware vector leads to an entry
+        // that saves the registers and jumps through $0314, and $0314 leads
+        // to a handler that acknowledges CIA 1 and returns. A tune that never
+        // installs a handler at either level leaves both in place and the
+        // harness can tell; a tune that installs one at either level owns its
+        // own timing. $0314 is set here even though the power-on image holds
+        // the KERNAL's $EA31, because that address is RAM here and may hold
+        // the tune.
+        write_irq_entry(&mut m.ram, stubs.entry);
+        write_ack_stub(&mut m.ram, stubs.ack);
+        if stubs.kernal_chain {
+            write_kernal_chain(&mut m.ram);
+        }
+        m.ram[usize::from(CINV)] = (stubs.ack & 0xff) as u8;
+        m.ram[usize::from(CINV + 1)] = (stubs.ack >> 8) as u8;
+        m.ram[usize::from(IRQ_VECTOR)] = (stubs.entry & 0xff) as u8;
+        m.ram[usize::from(IRQ_VECTOR + 1)] = (stubs.entry >> 8) as u8;
         m.ram[usize::from(RESET_VECTOR)] = (stubs.halt & 0xff) as u8;
         m.ram[usize::from(RESET_VECTOR + 1)] = (stubs.halt >> 8) as u8;
     }
@@ -900,7 +1026,7 @@ fn start(
 
     let mut harness = Harness::new(Rc::clone(machine), stubs, pal, cia_clock);
     let mut budget = 20_000_000u64;
-    // An IRQ through the default vector mid-init is acknowledged and returned
+    // An IRQ through the default chain mid-init is acknowledged and returned
     // from. One through a vector the tune pointed at the halt loop lands there
     // with S below $FD; only a real return restores it.
     let returned =
@@ -910,8 +1036,9 @@ fn start(
         budget -= 1;
     }
     // Whose handler is installed decides who drives the frame. A tune with no
-    // play address at all is driven purely by its own interrupts.
-    harness.frame_clock = harness.has_play_stub && harness.irq_vector() == stubs.irq;
+    // play address at all is driven purely by its own interrupts, and so is a
+    // tune that installed a handler at $FFFE or at $0314.
+    harness.frame_clock = harness.has_play_stub && harness.default_chain();
     let init_returned = returned(&cpu) && !cpu.jammed();
     if harness.frame_clock {
         // Clears an interrupt decision latched under the CIA line before the harness took over.
@@ -993,13 +1120,7 @@ impl Harness {
             let m = self.machine.borrow();
             self.trace.note(pc, cpu.at_instruction_boundary(), &m.ram);
         }
-        let (underflow, line_rose) = {
-            let m = self.machine.borrow();
-            let mut cia = m.cia.borrow_mut();
-            let before = cia.line();
-            let underflow = cia.tick();
-            (underflow, cia.line() && !before)
-        };
+        let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
             // The tune brought no handler, so the harness is the player. It
             // cannot wait on the processor's interrupt flag, because a tune
@@ -1012,13 +1133,13 @@ impl Harness {
                 // whatever latch the tune has written since, and none while
                 // the tune has stopped the timer through $DC0E.
                 underflow
-            } else if self.machine.borrow().cia.borrow().started {
-                // A VBL-speed song that started the timer itself: unchanged.
-                line_rose
             } else {
-                // A VBL-speed song: one call per raster frame. The frame
-                // keeps its own phase, as the raster does, so a call held
-                // back below does not push every later frame back with it.
+                // A VBL-speed song: one call per raster frame, whatever the
+                // tune does with CIA 1. The PSID format defines speed bit 0
+                // as "vertical blank interrupt timing (50Hz PAL, 60Hz NTSC)",
+                // so a timer the tune starts itself does not drive play. The
+                // frame keeps its own phase, as the raster does, so a call
+                // held back below does not push every later frame back.
                 self.frame_cycles += 1;
                 if self.frame_cycles >= self.frame_period {
                     self.frame_cycles -= self.frame_period;
@@ -1065,13 +1186,19 @@ impl Harness {
             .render_cycles(1, &mut self.audio);
     }
 
-    /// Read the interrupt vector back, to see whose handler is installed.
-    fn irq_vector(&self) -> u16 {
+    /// Whether both levels of the interrupt chain are still the harness's:
+    /// $FFFE leads to its entry, and $0314 to its handler or to one of the
+    /// KERNAL chain points it laid down. A vector pointing into the KERNAL's
+    /// handler means the KERNAL handles the interrupt, and that handler calls
+    /// nothing of the tune's, so a tune that writes $EA31 back into $0314 has
+    /// installed no handler of its own.
+    fn default_chain(&self) -> bool {
         let m = self.machine.borrow();
-        u16::from_le_bytes([
-            m.ram[usize::from(IRQ_VECTOR)],
-            m.ram[usize::from(IRQ_VECTOR + 1)],
-        ])
+        let word = |a: u16| u16::from_le_bytes([m.ram[usize::from(a)], m.ram[usize::from(a + 1)]]);
+        let cinv = word(CINV);
+        let kernal = self.stubs.kernal_chain
+            && matches!(cinv, KERNAL_IRQ | KERNAL_IRQ_END | KERNAL_IRQ_RESTORE);
+        word(IRQ_VECTOR) == self.stubs.entry && (cinv == self.stubs.ack || kernal)
     }
 }
 
@@ -1355,6 +1482,27 @@ mod tests {
         assert_eq!(cia.counter, KERNAL_TIMER_A_PAL);
         while !cia.tick() {}
         assert!(cia.line(), "timer A interrupt is not enabled");
+    }
+
+    /// CRA bit 4 is a force-load strobe: writing it with 1 loads the counter
+    /// from the latch at once, even while the timer runs, and it reads back as
+    /// 0 (6526 data sheet, CRA bit 4 "LOAD").
+    #[test]
+    fn force_load_reloads_a_running_timer_and_reads_back_clear() {
+        let mut m = Machine::new(Model::Pal);
+        m.cia.borrow_mut().kernal_timer_a(true);
+        for _ in 0..100 {
+            m.cia.borrow_mut().tick();
+        }
+        m.write(0xdc04, 0x00);
+        m.write(0xdc05, 0x01);
+        m.write(0xdc0e, 0x11);
+        assert_eq!(m.read(0xdc0e), 0x01, "the force-load strobe was stored");
+        let mut n = 1u64;
+        while !m.cia.borrow_mut().tick() {
+            n += 1;
+        }
+        assert_eq!(n, 0x0100 + 1, "first underflow after a force load of $0100");
     }
 
     #[test]

@@ -306,27 +306,31 @@ const NTSC_FRAME: f64 = 263.0 * 65.0;
 /// latch+1 cycles.
 const KERNAL_LATCH_PAL: f64 = 16_421.0;
 
-/// A version 2 PSID with one song, loaded at $1000 from the header, whose init
-/// is at $1000 and whose play is at `play`. The flags word is zero, so the
-/// header expresses no clock preference and the harness defaults to PAL.
-fn psid(code: &[u8], play: u16, speed: u32) -> Vec<u8> {
-    let mut b = vec![0u8; 0x7c];
+/// A PSID of the given version with one song: its header is the size the
+/// format fixes for that version (0x76 for v1, 0x7C for v2 and later), and the
+/// data block follows it directly. `load` is the header's load address; when
+/// it is zero the block must carry its own address in its first two bytes.
+fn psid_v(version: u16, load: u16, init: u16, play: u16, speed: u32, data: &[u8]) -> Vec<u8> {
+    let header: u16 = if version >= 2 { 0x7c } else { 0x76 };
+    let mut b = vec![0u8; usize::from(header)];
     b[0..4].copy_from_slice(b"PSID");
-    b[0x04..0x06].copy_from_slice(&2u16.to_be_bytes());
-    b[0x06..0x08].copy_from_slice(&0x7cu16.to_be_bytes());
-    b[0x08..0x0a].copy_from_slice(&0x1000u16.to_be_bytes());
-    b[0x0a..0x0c].copy_from_slice(&0x1000u16.to_be_bytes());
+    b[0x04..0x06].copy_from_slice(&version.to_be_bytes());
+    b[0x06..0x08].copy_from_slice(&header.to_be_bytes());
+    b[0x08..0x0a].copy_from_slice(&load.to_be_bytes());
+    b[0x0a..0x0c].copy_from_slice(&init.to_be_bytes());
     b[0x0c..0x0e].copy_from_slice(&play.to_be_bytes());
     b[0x0e..0x10].copy_from_slice(&1u16.to_be_bytes());
     b[0x10..0x12].copy_from_slice(&1u16.to_be_bytes());
     b[0x12..0x16].copy_from_slice(&speed.to_be_bytes());
-    b.extend_from_slice(code);
-    // The loader refuses anything shorter than 128 bytes, so a very short
-    // block is padded with zeros that nothing executes.
-    if b.len() < 0x80 {
-        b.resize(0x80, 0);
-    }
+    b.extend_from_slice(data);
     b
+}
+
+/// A version 2 PSID with one song, loaded at $1000 from the header, whose init
+/// is at $1000 and whose play is at `play`. The flags word is zero, so the
+/// header expresses no clock preference and the harness defaults to PAL.
+fn psid(code: &[u8], play: u16, speed: u32) -> Vec<u8> {
+    psid_v(2, 0x1000, 0x1000, play, speed, code)
 }
 
 /// What the summary line reports about a render.
@@ -479,4 +483,147 @@ fn an_unknown_sink_is_refused() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--sink"), "unexpected message: {stderr}");
+}
+
+/// The default interrupt path is the KERNAL's: the hardware vector leads to a
+/// routine that saves A, X and Y and jumps through $0314 (KERNAL $FF48), and
+/// the KERNAL's own handler ends by reading $DC0D and restoring the registers
+/// ($EA7E/$EA81). A tune with no play address whose init only points $0314 at
+/// its handler and enables interrupts must have that handler called on every
+/// CIA 1 timer A underflow. This handler chains on to $EA31, the way most do.
+#[test]
+fn a_tune_that_sets_only_the_ram_irq_vector_has_its_handler_called() {
+    // $1000 LDA #$0C / STA $0314 / LDA #$10 / STA $0315
+    // $100A CLI / RTS
+    // $100C LDA #$0F / STA $D418 / JMP $EA31     (the handler)
+    let code = [
+        0xa9, 0x0c, 0x8d, 0x14, 0x03, 0xa9, 0x10, 0x8d, 0x15, 0x03, 0x58, 0x60, 0xa9, 0x0f, 0x8d,
+        0x18, 0xd4, 0x4c, 0x31, 0xea,
+    ];
+    let s = render_built("cinv-chain", &psid(&code, 0, 1), "2", &[]);
+    assert_eq!(
+        s.frames, 0.0,
+        "the harness called a play routine the tune does not have"
+    );
+    let calls = s.chip_writes as f64;
+    let expected = s.cycles / (KERNAL_LATCH_PAL + 1.0);
+    assert!(
+        (calls - expected).abs() <= 2.0,
+        "the $0314 handler ran {calls} times over {} cycles, expected {expected:.1}",
+        s.cycles
+    );
+}
+
+/// The same, with a handler that acknowledges the CIA and restores the
+/// registers itself in the order the KERNAL's entry saved them (Y, X, A), then
+/// returns with RTI. It keeps running only if the entry pushed exactly A, X, Y.
+#[test]
+fn a_ram_vector_handler_can_restore_the_registers_the_entry_saved() {
+    // $1000 LDA #$0C / STA $0314 / LDA #$10 / STA $0315
+    // $100A CLI / RTS
+    // $100C LDA $DC0D / LDA #$0F / STA $D418 / PLA / TAY / PLA / TAX / PLA / RTI
+    let code = [
+        0xa9, 0x0c, 0x8d, 0x14, 0x03, 0xa9, 0x10, 0x8d, 0x15, 0x03, 0x58, 0x60, 0xad, 0x0d, 0xdc,
+        0xa9, 0x0f, 0x8d, 0x18, 0xd4, 0x68, 0xa8, 0x68, 0xaa, 0x68, 0x40,
+    ];
+    let s = render_built("cinv-own", &psid(&code, 0, 1), "2", &[]);
+    let calls = s.chip_writes as f64;
+    let expected = s.cycles / (KERNAL_LATCH_PAL + 1.0);
+    assert!(
+        (calls - expected).abs() <= 2.0,
+        "the $0314 handler ran {calls} times over {} cycles, expected {expected:.1}",
+        s.cycles
+    );
+}
+
+/// A tune with a play address whose init writes the KERNAL's own handler,
+/// $EA31, back into $0314 has installed no handler of its own: the KERNAL's
+/// handler calls nothing of the tune's. The harness must keep calling play.
+#[test]
+fn a_tune_that_restores_the_kernal_handler_in_0314_is_still_played() {
+    // $1000 SEI / LDA #$31 / STA $0314 / LDA #$EA / STA $0315 / RTS
+    // $100C RTS (play)
+    let code = [
+        0x78, 0xa9, 0x31, 0x8d, 0x14, 0x03, 0xa9, 0xea, 0x8d, 0x15, 0x03, 0x60, 0x60,
+    ];
+    let s = render_built("cinv-kernal", &psid(&code, 0x100c, 1), "2", &[]);
+    assert_frames(&s, KERNAL_LATCH_PAL + 1.0, "play with $0314 = $EA31");
+}
+
+/// The PSID format defines speed bit 0 as vertical blank timing: play is
+/// called at the frame rate, whatever the tune does with CIA 1. A VBL song
+/// whose init starts timer A with its own latch and enables its interrupt must
+/// still get exactly one play call per raster frame.
+#[test]
+fn a_vbl_song_that_starts_the_cia_itself_is_still_called_once_per_frame() {
+    // $1000 LDA #$00 / STA $DC04 / LDA #$20 / STA $DC05
+    // $100A LDA #$81 / STA $DC0D / LDA #$11 / STA $DC0E / RTS
+    // $1015 RTS (play)
+    let code = [
+        0xa9, 0x00, 0x8d, 0x04, 0xdc, 0xa9, 0x20, 0x8d, 0x05, 0xdc, 0xa9, 0x81, 0x8d, 0x0d, 0xdc,
+        0xa9, 0x11, 0x8d, 0x0e, 0xdc, 0x60, 0x60,
+    ];
+    let s = render_built("vbl-cia", &psid(&code, 0x1015, 0), "2", &[]);
+    assert_frames(&s, PAL_FRAME, "VBL song with its own CIA timer");
+}
+
+/// The header is 0x76 bytes for v1 and 0x7C for v2 and later, and nothing
+/// requires the file to be padded past that. A file is complete with its
+/// header, the 2-byte load address when the header's load address is zero,
+/// and at least one data byte.
+#[test]
+fn the_loader_accepts_the_shortest_complete_files() {
+    let probe = |name: &str, bytes: &[u8]| -> (bool, String) {
+        let dir = std::env::temp_dir().join(format!("sidplay-hdr-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tune = dir.join("tune.sid");
+        std::fs::write(&tune, bytes).unwrap();
+        let out = Command::new(harness())
+            .arg("--probe")
+            .arg(&tune)
+            .output()
+            .expect("the harness ran");
+        std::fs::remove_dir_all(&dir).ok();
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    // v2, one RTS byte, load address in the header.
+    let v2 = psid_v(2, 0x1000, 0x1000, 0x1000, 0, &[0x60]);
+    assert_eq!(v2.len(), 0x7d);
+    let (ok, text) = probe("v2", &v2);
+    assert!(
+        ok && text.contains("load $1000 init $1000 play $1000 (called), 1 bytes at file 124"),
+        "a 125-byte v2 file was not loaded: {text}"
+    );
+    // v1, one RTS byte.
+    let v1 = psid_v(1, 0x1000, 0x1000, 0x1000, 0, &[0x60]);
+    assert_eq!(v1.len(), 0x77);
+    let (ok, text) = probe("v1", &v1);
+    assert!(
+        ok && text.contains("load $1000 init $1000 play $1000 (called), 1 bytes at file 118"),
+        "a 119-byte v1 file was not loaded: {text}"
+    );
+    // v2 with the load address carried by the block: two address bytes and one
+    // data byte.
+    let v2z = psid_v(2, 0, 0x1000, 0x1000, 0, &[0x00, 0x10, 0x60]);
+    let (ok, text) = probe("v2z", &v2z);
+    assert!(
+        ok && text.contains("load $1000 init $1000 play $1000 (called), 1 bytes at file 124"),
+        "a v2 file with an embedded load address and one data byte was not loaded: {text}"
+    );
+    // Too short: a v2 header cut one byte short, and a v2 file whose block
+    // holds only the load address.
+    let (ok, text) = probe("cut", &v2[..0x7b]);
+    assert!(!ok, "a 123-byte v2 file was accepted: {text}");
+    let (ok, text) = probe("addr-only", &v2z[..0x7e]);
+    assert!(
+        !ok,
+        "a v2 file holding only a load address was accepted: {text}"
+    );
 }
