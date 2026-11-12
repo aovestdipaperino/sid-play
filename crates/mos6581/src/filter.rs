@@ -2,6 +2,7 @@
 //! with the mixer DC and the routing rules the hardware has.
 
 use crate::Model;
+use crate::chip_data;
 use crate::tables::cutoff_hz;
 
 pub const ROUTE_VOICE_1: u8 = 1 << 0;
@@ -16,10 +17,9 @@ pub const TAP_HIGH_PASS: u8 = 1 << 2;
 /// mean on hardware.
 pub const TAP_NONE: u8 = 0;
 
-/// The mixer's own DC offset, measured at about one eighteenth of one voice's
-/// full range. Voices are normalised by `voice::FULL_SCALE`, so the same
-/// fraction applies directly in this domain.
-const MIXER_DC: f64 = -1.0 / 18.0;
+/// The mixer's own DC offset, in the same normalised domain as the voices
+/// (`voice::FULL_SCALE`); value from `chip_data`.
+const MIXER_DC: f64 = chip_data::MIXER_DC;
 
 pub struct Filter {
     band: f64,
@@ -42,7 +42,7 @@ impl Filter {
             band: 0.0,
             low: 0.0,
             w0: 0.0,
-            inv_q: 1.0 / 0.707,
+            inv_q: 1.0 / chip_data::FILTER_Q_MIN,
             routed: 0,
             taps: TAP_LOW_PASS,
             voice3_off: false,
@@ -59,11 +59,12 @@ impl Filter {
     }
 
     /// Resonance nibble to the damping coefficient the difference equation
-    /// needs, which is `1/Q` rather than `Q`: Q runs from 0.707 at no resonance
+    /// needs, which is `1/Q` rather than `Q`: Q runs from its minimum at no resonance
     /// to 1.707 at full, so the coefficient shrinks as resonance is added.
     /// Inverting this makes the filter *quieter* as resonance increases.
     pub fn set_resonance(&mut self, res: u8) {
-        self.inv_q = 1.0 / (0.707 + f64::from(res & 0x0f) / 15.0);
+        self.inv_q =
+            1.0 / (chip_data::FILTER_Q_MIN + f64::from(res & 0x0f) / chip_data::FILTER_Q_STEPS);
     }
 
     #[inline]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decode the power-on RAM pattern table into crates/sid-play/src/poweron_table.rs.
+"""Decode the power-on RAM pattern table into crates/sid-gpl-data/src/poweron.rs.
 
 Input is the run-length table published with the reference SID playback
 library (GPL-2.0): records of [offset, [count], values], where a high bit on

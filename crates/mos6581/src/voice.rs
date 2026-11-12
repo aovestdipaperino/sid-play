@@ -1,5 +1,6 @@
 //! One voice: oscillator, envelope, and the amplitude stage between them.
 
+use crate::chip_data;
 use crate::envelope::{Adsr, Envelope};
 use crate::tables::WaveTables;
 use crate::wave::Wave;
@@ -14,11 +15,11 @@ pub const FULL_SCALE: f64 = (0x0fff * 0xff) as f64;
 
 /// The waveform's own zero level. It sits below the middle of the 12-bit range,
 /// which is why a full-swing voice is not centred on zero.
-const WAVE_ZERO: i32 = 0x380;
+const WAVE_ZERO: i32 = chip_data::VOICE_WAVE_ZERO;
 /// The DC each voice carries on the mixer. It is present at every envelope
 /// level, including silence, which is what keeps the output continuous as an
 /// envelope starts and stops; the output stage's high-pass removes it.
-const VOICE_DC: i32 = 0x800 * 0xff;
+const VOICE_DC: i32 = chip_data::VOICE_DC;
 
 pub struct Voice {
     wave: Wave,

@@ -1,5 +1,7 @@
 //! Gate-driven envelope generator, clocked once per Φ2 cycle.
 
+use crate::chip_data;
+
 /// The four register nibbles: `$d402` attack/decay, `$d403` sustain/release.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Adsr {
@@ -20,10 +22,9 @@ impl Adsr {
     }
 }
 
-/// Rate-counter periods per ADSR nibble, measured on real 6581 hardware.
-const RATE_PERIOD: [u16; 16] = [
-    9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
-];
+/// Rate-counter period per ADSR nibble; values from `chip_data`, see
+/// docs/provenance.md.
+const RATE_PERIOD: [u16; 16] = chip_data::ENV_RATE_PERIOD;
 
 /// Exponential-counter period loaded at each envelope counter value. The shape of
 /// the decay and release comes from this divider rather than from a curve; the
@@ -31,13 +32,12 @@ const RATE_PERIOD: [u16; 16] = [
 /// which is why the table is only consulted on the falling phases.
 const EXPONENTIAL_PERIOD: [u16; 256] = {
     let mut t = [0u16; 256];
-    t[0] = 1;
-    t[6] = 30;
-    t[14] = 16;
-    t[26] = 8;
-    t[54] = 4;
-    t[93] = 2;
-    t[255] = 1;
+    let mut i = 0;
+    while i < chip_data::ENV_EXPONENTIAL_BREAKPOINTS.len() {
+        let (level, period) = chip_data::ENV_EXPONENTIAL_BREAKPOINTS[i];
+        t[level as usize] = period;
+        i += 1;
+    }
     t
 };
 
@@ -107,9 +107,9 @@ impl Envelope {
         // which is the ADSR-delay bug: rewrite the register so the new period is
         // below the counter's current value and it keeps counting to the wrap,
         // resets, and only then counts up to the new period before stepping.
-        self.rate_counter += 1;
-        if self.rate_counter & 0x8000 != 0 {
-            self.rate_counter = (self.rate_counter + 1) & 0x7fff;
+        self.rate_counter = (self.rate_counter + 1) & 0x7fff;
+        if self.rate_counter == 0 && chip_data::ENV_RATE_COUNTER_SKIPS_ZERO {
+            self.rate_counter = 1;
         }
         if self.rate_counter != period {
             return;

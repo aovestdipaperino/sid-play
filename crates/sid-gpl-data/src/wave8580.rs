@@ -2,7 +2,7 @@
 // Waveform measurement data: reSID (Dag Lem), GPL-2.0.
 
 #[rustfmt::skip]
-pub static WAVE8580: crate::tables::WaveTables = crate::tables::WaveTables {
+pub const WAVE8580: crate::WaveData = crate::WaveData {
     st: [
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

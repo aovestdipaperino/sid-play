@@ -6,3 +6,6 @@ rust-version = "1.85"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 license = "GPL-2.0-only"
 description = "MOS 6581 SID chip emulator, stepped one Φ2 cycle at a time"
+
+[dependencies]
+sid-gpl-data = { path = "../sid-gpl-data", version = "0.1" }

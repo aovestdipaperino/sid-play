@@ -1,5 +1,6 @@
 //! MOS 6581 SID, emulated one step per Φ2 cycle.
 
+mod chip_data;
 pub mod envelope;
 pub mod extfilt;
 pub mod filter;

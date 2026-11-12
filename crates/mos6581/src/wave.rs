@@ -1,5 +1,6 @@
 //! Oscillator: 24-bit phase accumulator, measured combination waveforms, noise.
 
+use crate::chip_data;
 use crate::tables::WaveTables;
 
 pub const GATE: u8 = 1 << 0;
@@ -13,10 +14,11 @@ pub const NOISE: u8 = 1 << 7;
 
 const ACC_MASK: u32 = 0x00ff_ffff;
 const ACC_MSB: u32 = 0x0080_0000;
-const ACC_BIT19: u32 = 0x0008_0000;
+/// Accumulator bit whose rising edge clocks the noise register.
+const NOISE_CLOCK: u32 = 1 << chip_data::NOISE_CLOCK_BIT;
 
 /// What the 23-bit noise register is loaded with when the test bit is released.
-const SHIFT_RELOAD: u32 = 0x7f_ff_f8;
+const SHIFT_RELOAD: u32 = chip_data::NOISE_SHIFT_RELOAD;
 
 /// The seven waveform selections that have a shape of their own. These are value
 /// bindings, so a `match` on them compares bitmasks; writing `SAWTOOTH | TRIANGLE`
@@ -110,7 +112,7 @@ impl Wave {
 
         // The noise register is clocked by bit 19 of the accumulator going high,
         // so the frequency register sets the noise rate.
-        if (self.previous & ACC_BIT19) == 0 && (self.accumulator & ACC_BIT19) != 0 {
+        if (self.previous & NOISE_CLOCK) == 0 && (self.accumulator & NOISE_CLOCK) != 0 {
             let bit0 = ((self.shift >> 22) ^ (self.shift >> 17)) & 1;
             self.shift = ((self.shift << 1) & 0x007f_ffff) | bit0;
             self.noise_shifts += 1;
@@ -187,15 +189,11 @@ impl Wave {
     }
 
     fn noise_output(&self) -> u16 {
-        let s = self.shift;
-        (((s & 0x0040_0000) >> 11)
-            | ((s & 0x0010_0000) >> 10)
-            | ((s & 0x0001_0000) >> 7)
-            | ((s & 0x0000_2000) >> 5)
-            | ((s & 0x0000_0800) >> 4)
-            | ((s & 0x0000_0080) >> 1)
-            | ((s & 0x0000_0010) << 1)
-            | ((s & 0x0000_0004) << 2)) as u16
+        let mut out = 0u16;
+        for (i, &tap) in chip_data::NOISE_OUTPUT_TAPS.iter().enumerate() {
+            out |= (((self.shift >> tap) & 1) as u16) << (11 - i);
+        }
+        out
     }
 
     /// The byte `$d41b` returns.

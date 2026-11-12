@@ -1,10 +1,12 @@
 //! The C64's output stage: a low-pass and a high-pass STC network between the
 //! SID's pin and the line out. The buffer transistor is not modelled.
 
-/// 3 dB at 16 kHz, from R = 10k and C = 1000pF.
-const W0_LOW: f64 = 104_858.0;
-/// 3 dB at 16 Hz, from R = 1k and C = 10uF.
-const W0_HIGH: f64 = 105.0;
+use crate::chip_data;
+
+/// Low-pass pole, rad/s.
+const W0_LOW: f64 = chip_data::EXTFILT_W0_LOW;
+/// High-pass pole, rad/s.
+const W0_HIGH: f64 = chip_data::EXTFILT_W0_HIGH;
 /// The poles above are in rad/s and the chip is clocked at roughly 1e6 Hz, so
 /// one cycle advances the network by 1e-6 seconds.
 const DT: f64 = 1.0e-6;

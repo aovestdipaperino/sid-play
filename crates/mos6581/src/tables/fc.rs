@@ -1,63 +1,9 @@
 //! Cutoff register -> centre frequency, from measured points, interpolated to
 //! 2048 entries.
-//!
-//! Filter cutoff measurement points: reSID (Dag Lem), GPL-2.0. The point
-//! tables below match reSID's `f0_points_6581` and `f0_points_8580`.
 
 pub struct CutoffTable {
     pub f0: [f64; 2048],
 }
-
-/// (fc, Hz) pairs measured on real silicon.
-const POINTS_6581: &[(u32, f64)] = &[
-    (0, 220.0),
-    (128, 230.0),
-    (256, 250.0),
-    (384, 300.0),
-    (512, 420.0),
-    (640, 780.0),
-    (768, 1600.0),
-    (832, 2300.0),
-    (896, 3200.0),
-    (960, 4300.0),
-    (992, 5000.0),
-    (1008, 5400.0),
-    (1016, 5700.0),
-    (1023, 6000.0),
-    (1024, 4600.0),
-    (1032, 4800.0),
-    (1056, 5300.0),
-    (1088, 6000.0),
-    (1120, 6600.0),
-    (1152, 7200.0),
-    (1280, 9500.0),
-    (1408, 12000.0),
-    (1536, 14500.0),
-    (1664, 16000.0),
-    (1792, 17100.0),
-    (1920, 17700.0),
-    (2047, 18000.0),
-];
-
-const POINTS_8580: &[(u32, f64)] = &[
-    (0, 30.0),
-    (128, 800.0),
-    (256, 1600.0),
-    (384, 2500.0),
-    (512, 3300.0),
-    (640, 4100.0),
-    (768, 4800.0),
-    (896, 5600.0),
-    (1024, 6500.0),
-    (1152, 7500.0),
-    (1280, 8400.0),
-    (1408, 9200.0),
-    (1536, 9800.0),
-    (1664, 10500.0),
-    (1792, 11000.0),
-    (1920, 11700.0),
-    (2047, 12500.0),
-];
 
 /// Cubic Hermite tangents restricted to the monotone region (Fritsch-Carlson).
 ///
@@ -143,14 +89,16 @@ static CUTOFF_8580: std::sync::OnceLock<CutoffTable> = std::sync::OnceLock::new(
 /// The 6581 is the modelled chip, so both clock variants share its curve.
 pub fn cutoff_table(model: crate::Model) -> &'static CutoffTable {
     match model {
-        crate::Model::Pal | crate::Model::Ntsc => CUTOFF_6581.get_or_init(|| build(POINTS_6581)),
+        crate::Model::Pal | crate::Model::Ntsc => {
+            CUTOFF_6581.get_or_init(|| build(sid_gpl_data::CUTOFF_POINTS_6581))
+        }
     }
 }
 
 /// The 8580 curve. Kept because the data is vendored and the linear response is
 /// a useful reference, but nothing in the chip path selects it yet.
 pub fn cutoff_table_8580() -> &'static CutoffTable {
-    CUTOFF_8580.get_or_init(|| build(POINTS_8580))
+    CUTOFF_8580.get_or_init(|| build(sid_gpl_data::CUTOFF_POINTS_8580))
 }
 
 #[cfg(test)]

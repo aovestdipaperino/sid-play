@@ -19,8 +19,6 @@ use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-mod poweron_table;
-
 const RATE: f64 = 44_100.0;
 
 /// Where the harness put its own three-byte and six-byte footprints. A tune
@@ -633,7 +631,7 @@ fn write_halt_loop(ram: &mut [u8; 0x1_0000], halt: u16) {
 
 /// Lay down the machine state a tune expects to find, before its init runs.
 fn write_machine_state(ram: &mut [u8; 0x1_0000], pal: bool, load: u16, end: u16) {
-    for (addr, value) in poweron_table::POWERON.iter().enumerate() {
+    for (addr, value) in sid_gpl_data::POWERON.iter().enumerate() {
         ram[addr] = *value;
     }
     // The video-standard flag the Kernal keeps in $02A6: 1 for PAL, 0 for NTSC.
