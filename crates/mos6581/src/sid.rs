@@ -1,13 +1,13 @@
 //! The chip: register file, per-cycle order, mixer and output.
 
+use crate::Model;
 use crate::envelope::Adsr;
 use crate::extfilt::ExtFilter;
 use crate::filter::Filter;
 use crate::resample::{Method, ResampleError, Resampler};
 use crate::tables;
-use crate::voice::{Voice, FULL_SCALE};
+use crate::voice::{FULL_SCALE, Voice};
 use crate::wave::{OSC_SYNC, RING_MOD};
-use crate::Model;
 
 /// Registers at `$d400..=$d41f`.
 pub const REG_COUNT: usize = 32;

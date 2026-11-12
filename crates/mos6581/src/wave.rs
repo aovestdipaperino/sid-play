@@ -178,11 +178,7 @@ impl Wave {
 
     #[inline]
     fn pulse_mask(&self, pw: u16, ctrl: u8) -> u16 {
-        if self.pulse_high(pw, ctrl) {
-            0x0fff
-        } else {
-            0
-        }
+        if self.pulse_high(pw, ctrl) { 0x0fff } else { 0 }
     }
 
     #[inline]

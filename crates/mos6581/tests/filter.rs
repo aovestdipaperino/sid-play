@@ -1,5 +1,5 @@
-use mos6581::tables::cutoff_hz;
 use mos6581::Model;
+use mos6581::tables::cutoff_hz;
 
 #[test]
 fn cutoff_spans_the_measured_6581_range() {

@@ -160,8 +160,8 @@ The 13 failures are not one findable bug. See the investigation log below.
 - `crates/sid-play/src/poweron_table.rs` is derived from libsidplayfp's
   `poweron.bin` capture (also GPL-2.0) and is **byte-identical to it across all
   1024 addresses**.
-- The library keeps **zero runtime dependencies**. `mos6510` is a
-  dev-dependency only.
+- `mos6581` has **zero runtime dependencies**; `sid-play` depends on
+  `mos6510` (crates.io) and `mos6581`.
 
 ## Upstream bug filed
 

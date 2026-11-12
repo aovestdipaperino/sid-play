@@ -1,8 +1,8 @@
 //! The SID's filter: a two-integrator state-variable biquad, 12 dB per octave,
 //! with the mixer DC and the routing rules the hardware has.
 
-use crate::tables::cutoff_hz;
 use crate::Model;
+use crate::tables::cutoff_hz;
 
 pub const ROUTE_VOICE_1: u8 = 1 << 0;
 pub const ROUTE_VOICE_2: u8 = 1 << 1;
