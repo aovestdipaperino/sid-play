@@ -14,13 +14,18 @@
 //!   noise description, resonance description, AUDIO OUT pin notes, frequency
 //!   formula.
 //! - SID register reference, <https://www.oxyron.de/html/registers_sid.html>:
-//!   noise LFSR feedback and output bits.
+//!   noise LFSR output bits (its feedback rule, bit 22 XOR bit 17 into bit 0, is
+//!   implemented elsewhere and is cited here only as context for the tests).
 //! - Bob Yannes interview (1996),
 //!   <http://www.landley.net/history/mirror/commodore/yannes.html>: envelope
 //!   structure, piecewise exponential decay, noise clocking, volume-register
 //!   playback.
-//! - Commodore 64 board 250466 schematic (public redraws): R30 = 10 kOhm,
-//!   C54 = 1 nF output low-pass; C55 = 10 uF output coupling capacitor.
+//! - Commodore 64 board 250466 output stage: component values supplied by the
+//!   project brief (R30 10 kOhm, C54 1 nF, C55 10 uF); not independently
+//!   verified here against a schematic.
+//!
+//! Exact reproduction of the real chip's noise sequence is outside the claim of
+//! this file: the noise constants aim for usable, plausible noise only.
 
 /// Φ2 cycles between envelope counter steps, per attack/decay/release nibble.
 ///
@@ -38,11 +43,14 @@ pub(crate) const ENV_RATE_PERIOD: [u16; 16] = [
 /// envelope clock at set points during decay and release, "a piece-wise linear
 /// approximation of an exponential"; datasheet table: decay/release times are
 /// exactly 3x the attack times ("from peak to zero").
-/// Derivation (own design of the breakpoints): the divider doubles each time the
-/// level halves (104, 52, 26, 13, 6), giving a constant-slope log curve; the
-/// first breakpoint (104) was chosen so a full 255 -> 0 sweep costs
+/// Derivation (own design of the breakpoints): below the first breakpoint the
+/// divider doubles each time the level halves (104, 52, 26, 13, 6), giving a
+/// constant-slope log curve. The first segment 255 -> 104 is not a halving: 104
+/// is a tuned value, chosen so a full 255 -> 0 sweep costs
 /// 151*1 + 52*2 + 26*4 + 13*8 + 7*16 + 6*32 = 767 rate periods, i.e. 3.008x the
 /// 255 periods of a full attack, matching the datasheet's 3x ratio.
+/// The (0, 1) entry resets the divider to 1 when the envelope reaches 0, so a
+/// following attack and the next decay start from an undivided clock.
 pub(crate) const ENV_EXPONENTIAL_BREAKPOINTS: &[(u8, u16)] = &[
     (255, 1),
     (104, 2),
@@ -63,7 +71,8 @@ pub(crate) const ENV_RATE_COUNTER_SKIPS_ZERO: bool = false;
 
 /// Output-stage low-pass corner, rad/s.
 ///
-/// Source: C64 board 250466 schematic, R30 = 10 kOhm and C54 = 1 nF.
+/// Source: project brief, board 250466 R30 = 10 kOhm and C54 = 1 nF (not
+/// independently verified against a schematic).
 /// Derivation: w0 = 1 / (R C) = 1 / (1e4 * 1e-9) = 1.0e5 rad/s (about 15.9 kHz).
 /// The nominal value is used with DT = 1e-6 uncompensated: forward Euler with
 /// w0 * DT = 0.1 per step, run at the real PAL Φ2 (1.015 us per step), gives an
@@ -73,8 +82,10 @@ pub(crate) const EXTFILT_W0_LOW: f64 = 1.0e5;
 
 /// Output-stage high-pass corner, rad/s.
 ///
-/// Source: C64 board 250466 schematic, C55 = 10 uF coupling capacitor; MOS 6581
-/// datasheet, AUDIO OUT: "The recommended resistance is 1 KOhm".
+/// Source: project brief, board 250466 C55 = 10 uF coupling capacitor (not
+/// independently verified). The 1 kOhm load is an assumption taken from the
+/// MOS 6581 datasheet AUDIO OUT note, "The recommended resistance is 1 KOhm";
+/// the actual load the capacitor drives on the board was not checked.
 /// Derivation: w0 = 1 / (R C) = 1 / (1e3 * 1e-5) = 100 rad/s (about 15.9 Hz).
 /// w0 * DT = 1e-4, so Euler error is negligible; the DT vs real Φ2 mismatch
 /// (1.5 % PAL, 2.2 % NTSC) only shifts the corner by that fraction.
@@ -108,12 +119,18 @@ pub(crate) const FILTER_Q_STEPS: f64 = 8.0;
 /// volume sweep half a voice's normalised swing, loud but below a voice.
 /// Positive sign is arbitrary, since the output high-pass removes steady DC
 /// and the sign only sets the playback's phase.
+/// Placement in this emulator: the DC is added after the filter output and
+/// outside voice routing, out = (unfiltered + filtered + MIXER_DC) * volume,
+/// followed by a 1/3 mix scale and the output-stage high-pass. Consequence: a
+/// large volume step produces an audible click (real 6581s click too). The
+/// value is a tunable to be checked by ear, not a measurement.
 pub(crate) const MIXER_DC: f64 = 0.5;
 
 /// Waveform DAC value that represents zero signal.
 ///
 /// Source: own reasoning on the 12-bit waveform DAC range 0..4095 (MOS 6581
-/// datasheet, 12-bit waveform outputs). Rationale: a centred DAC; 2048 is the
+/// datasheet, 12-bit waveform outputs). Rationale: an ideal-model centred DAC
+/// (real DAC non-linearity and offset are not modelled); 2048 is the
 /// midpoint code, so sawtooth, triangle and pulse at 50 % swing symmetrically.
 pub(crate) const VOICE_WAVE_ZERO: i32 = 2048;
 
@@ -136,10 +153,18 @@ pub(crate) const NOISE_OUTPUT_TAPS: [u8; 8] = [20, 18, 14, 11, 9, 5, 2, 0];
 /// Source: unsourced own choice, constrained by the Yannes interview ("clocked
 /// by one of the intermediate bits of the accumulator") and the datasheet
 /// (noise ranges "from a low rumbling to hissing white noise"; Fout =
-/// Fn * Fclk / 16777216). Rationale: bit k rises Fn * Fclk / 2^(k+1) times a
-/// second; bit 19 is the highest (slowest) bit whose shift rate at Fn = 65535
-/// (about 62.5 kHz) still exceeds twice 20 kHz, so the top setting is
-/// full-band hiss while low settings rumble.
+/// Fn * Fclk / 16777216). Selection rule (a judgement, not a derivation): bit k
+/// rises Fn * Fclk / 2^(k+1) times a second. I required the shift rate at
+/// Fn = 65535 to be at least 40 kHz (twice the 20 kHz audio band) so the top
+/// setting is full-band hiss, and took the slowest bit meeting it: bit 19
+/// (about 62.5 kHz; bit 20 gives only about 31 kHz). Bit 18 (about 125 kHz) and
+/// lower bits also satisfy the threshold; the slowest qualifying bit was
+/// preferred to keep low settings in the "low rumbling" range. The datasheet's
+/// statement that noise "changes at the frequency of Oscillator X" read
+/// literally would mean one shift per period (bit 23), which cannot exceed
+/// about 3.9 kHz and so cannot give hissing white noise; it was read as "scales
+/// with" the oscillator frequency, which every accumulator bit satisfies, and
+/// Yannes' "intermediate bit" was given precedence.
 pub(crate) const NOISE_CLOCK_BIT: u8 = 19;
 
 /// Noise LFSR value after reset and after TEST is released.
@@ -153,12 +178,46 @@ pub(crate) const NOISE_SHIFT_RELOAD: u32 = 0x7F_FFFF;
 mod tests {
     use super::*;
 
+    /// Datasheet "Envelope Rates" table, decay/release column at 1 MHz, in us
+    /// (6 ms .. 24 s): the reference the rate table must reproduce.
+    const DATASHEET_DECAY_US: [f64; 16] = [
+        6e3, 24e3, 48e3, 72e3, 114e3, 168e3, 204e3, 240e3, 300e3, 750e3, 1.5e6, 2.4e6, 3e6, 9e6,
+        15e6, 24e6,
+    ];
+
+    /// Per-step divider periods for a full sweep 255 -> 1 (the step taken at
+    /// each level), loading the divider when a breakpoint level is reached.
+    fn decay_dividers() -> Vec<u32> {
+        let mut period = 1u32;
+        let mut out = Vec::new();
+        for level in (1..=255u8).rev() {
+            if let Some(e) = ENV_EXPONENTIAL_BREAKPOINTS.iter().find(|e| e.0 == level) {
+                period = u32::from(e.1);
+            }
+            out.push(period);
+        }
+        out
+    }
+
     #[test]
     fn rate_periods_increase_and_fit_15_bits() {
         for w in ENV_RATE_PERIOD.windows(2) {
             assert!(w[0] < w[1], "{} !< {}", w[0], w[1]);
         }
         assert!(ENV_RATE_PERIOD.iter().all(|&p| p > 0 && p < (1 << 15)));
+    }
+
+    #[test]
+    fn decay_times_match_datasheet() {
+        let total: u32 = decay_dividers().iter().sum();
+        for (nib, (&p, &want)) in ENV_RATE_PERIOD.iter().zip(&DATASHEET_DECAY_US).enumerate() {
+            let got = f64::from(p) * f64::from(total);
+            let err = (got - want).abs() / want;
+            // 1 % budget, plus the unavoidable error of rounding the period to
+            // an integer (half a cycle out of `p`), which dominates nibble 0.
+            let tol = 0.01 + 0.5 / f64::from(p);
+            assert!(err < tol, "nibble {nib}: {got} us vs {want} us ({err})");
+        }
     }
 
     #[test]
@@ -173,29 +232,27 @@ mod tests {
     }
 
     #[test]
-    fn full_decay_is_three_times_attack() {
-        // Walk 255 -> 0, loading the divider whenever a breakpoint level is reached.
-        let mut period = 1u32;
-        let mut total = 0u32;
-        let mut level = 255u8;
-        while level > 0 {
-            if let Some(e) = ENV_EXPONENTIAL_BREAKPOINTS.iter().find(|e| e.0 == level) {
-                period = u32::from(e.1);
-            }
-            total += period;
-            level -= 1;
+    fn divider_non_decreasing_as_level_falls() {
+        for w in decay_dividers().windows(2) {
+            assert!(w[0] <= w[1], "divider fell from {} to {}", w[0], w[1]);
         }
-        let ratio = f64::from(total) / 255.0;
-        assert!((ratio - 3.0).abs() < 0.05, "decay/attack ratio {ratio}");
     }
 
     #[test]
-    fn q_positive_and_increasing() {
+    fn full_decay_is_three_times_attack() {
+        let total: u32 = decay_dividers().iter().sum();
+        let ratio = f64::from(total) / 255.0;
+        // Breakpoints give 767 periods: ratio 3.008.
+        assert!((ratio - 3.0).abs() < 0.01, "decay/attack ratio {ratio}");
+    }
+
+    #[test]
+    fn q_increases_with_res() {
         let q = |res: u8| FILTER_Q_MIN + f64::from(res) / FILTER_Q_STEPS;
-        assert!(q(0) > 0.0);
         for r in 0..15 {
             assert!(q(r + 1) > q(r));
         }
+        assert!(q(15) < 10.0, "1/Q must stay well away from 0");
     }
 
     #[test]
@@ -208,8 +265,21 @@ mod tests {
     }
 
     #[test]
-    fn noise_reload_valid() {
+    fn noise_lfsr_runs_and_output_varies() {
         assert!(NOISE_SHIFT_RELOAD != 0 && NOISE_SHIFT_RELOAD < (1 << 23));
+        let mut reg = NOISE_SHIFT_RELOAD;
+        let mut seen = [false; 256];
+        for _ in 0..100_000 {
+            let fb = ((reg >> 22) ^ (reg >> 17)) & 1;
+            reg = ((reg << 1) | fb) & 0x7F_FFFF;
+            assert_ne!(reg, 0, "LFSR locked up");
+            let out = NOISE_OUTPUT_TAPS
+                .iter()
+                .fold(0usize, |acc, &b| (acc << 1) | ((reg >> b) & 1) as usize);
+            seen[out] = true;
+        }
+        let distinct = seen.iter().filter(|&&x| x).count();
+        assert!(distinct >= 250, "only {distinct} distinct noise outputs");
     }
 
     #[test]
@@ -221,9 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_constants_in_range() {
-        assert!((0..4096).contains(&VOICE_WAVE_ZERO));
-        assert_eq!(VOICE_DC, 0);
-        assert!(MIXER_DC != 0.0);
+    fn wave_zero_is_dac_midpoint() {
+        assert!((VOICE_WAVE_ZERO - 2048).abs() <= 1);
     }
 }
