@@ -83,25 +83,33 @@ fn build(points: &[(u32, f64)]) -> CutoffTable {
     CutoffTable { f0 }
 }
 
+#[cfg(feature = "gpl-data")]
+const POINTS_6581: &[(u32, f64)] = sid_gpl_data::CUTOFF_POINTS_6581;
+#[cfg(feature = "gpl-data")]
+const POINTS_8580: &[(u32, f64)] = sid_gpl_data::CUTOFF_POINTS_8580;
+#[cfg(not(feature = "gpl-data"))]
+const POINTS_6581: &[(u32, f64)] = super::default::CUTOFF_POINTS;
+#[cfg(not(feature = "gpl-data"))]
+const POINTS_8580: &[(u32, f64)] = super::default::CUTOFF_POINTS;
+
 static CUTOFF_6581: std::sync::OnceLock<CutoffTable> = std::sync::OnceLock::new();
 static CUTOFF_8580: std::sync::OnceLock<CutoffTable> = std::sync::OnceLock::new();
 
 /// The 6581 is the modelled chip, so both clock variants share its curve.
 pub fn cutoff_table(model: crate::Model) -> &'static CutoffTable {
     match model {
-        crate::Model::Pal | crate::Model::Ntsc => {
-            CUTOFF_6581.get_or_init(|| build(sid_gpl_data::CUTOFF_POINTS_6581))
-        }
+        crate::Model::Pal | crate::Model::Ntsc => CUTOFF_6581.get_or_init(|| build(POINTS_6581)),
     }
 }
 
 /// The 8580 curve. Kept because the data is vendored and the linear response is
 /// a useful reference, but nothing in the chip path selects it yet.
 pub fn cutoff_table_8580() -> &'static CutoffTable {
-    CUTOFF_8580.get_or_init(|| build(sid_gpl_data::CUTOFF_POINTS_8580))
+    CUTOFF_8580.get_or_init(|| build(POINTS_8580))
 }
 
-#[cfg(test)]
+// The 8580 curve assertions describe the measured data.
+#[cfg(all(test, feature = "gpl-data"))]
 mod tests {
     use super::cutoff_table_8580;
 

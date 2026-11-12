@@ -49,13 +49,12 @@ fn a_gated_tone_makes_sound() {
     );
 }
 
-/// The measured 6581 curve bottoms out at 220 Hz, so a 220 Hz fundamental sits *at*
-/// the closed corner and is not the right probe. A tone 17 times above it is: the
-/// second-order stage has to take it down by roughly the square of that ratio, which
-/// is what this asserts.
+/// A fundamental near the closed corner is not the right probe. A tone well above
+/// the closed corner is: the second-order stage has to take it down by roughly the
+/// square of the ratio, which is what this asserts.
 #[test]
 fn the_filter_actually_filters() {
-    let probe = 65_000u16; // ~3.8 kHz at the PAL clock, 17x above the closed corner
+    let probe = 65_000u16; // ~3.8 kHz at the PAL clock, far above the closed corner
 
     let mut open = Sid::new(Model::Pal, RATE);
     play_tone(&mut open, probe);

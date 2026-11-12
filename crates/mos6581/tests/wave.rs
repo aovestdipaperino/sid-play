@@ -148,12 +148,15 @@ fn each_waveform_selection_reads_its_own_table() {
 /// If the combination arms were written as or-patterns they would all fall through
 /// to the same table, so the four combinations would read identically. They must not.
 #[test]
-fn the_four_combinations_are_mutually_distinct() {
+fn the_combinations_are_mutually_distinct() {
+    // The built-in AND tables make the three-way table equal saw+triangle by
+    // construction, so only the measured tables keep all four apart.
     let combos = [
         wave::SAWTOOTH | wave::TRIANGLE,
         wave::PULSE | wave::TRIANGLE,
         wave::PULSE | wave::SAWTOOTH,
-        wave::PULSE | wave::SAWTOOTH | wave::TRIANGLE,
+        #[cfg(feature = "gpl-data")]
+        (wave::PULSE | wave::SAWTOOTH | wave::TRIANGLE),
     ];
     let mut seen: Vec<Vec<u16>> = Vec::new();
     for ctrl in combos {
@@ -187,7 +190,7 @@ fn noise_overrides_the_other_selections() {
 
 #[test]
 fn noise_rate_follows_the_frequency_register() {
-    // The shift register is clocked by accumulator bit 19, so a higher frequency
+    // The shift register is clocked by an accumulator bit, so a higher frequency
     // register must produce more shifts, not the same number.
     let mut slow = wave_obj();
     let mut fast = wave_obj();
@@ -207,7 +210,7 @@ fn noise_rate_follows_the_frequency_register() {
 fn noise_is_loud_symmetric_about_mid_scale_and_reproducible() {
     // The waveform output is unsigned 12-bit like every other shape; centring to
     // zero happens later, in the voice's amplitude stage. FREQ is high enough that
-    // bit 19 clocks the register thousands of times over the sample, so this
+    // the clock bit rises the register thousands of times over the sample, so this
     // measures the shift register rather than its seed value.
     let mut a = wave_obj();
     let mut b = wave_obj();
@@ -397,7 +400,7 @@ fn a_gated_sawtooth_reaches_full_amplitude() {
 fn an_ungated_voice_carries_the_dc_and_no_signal() {
     // Silence for an idle voice is achieved downstream: the output stage's
     // high-pass throws the DC away. What the voice itself must guarantee is that
-    // it produces no *signal* - a flat line at the DC term, which is 0x800 * 0xff.
+    // it produces no *signal* - a flat line at the DC term.
     let mut v = voice();
     let first = v.tick(1000, 0, wave::SAWTOOTH, FAST, false);
     for _ in 0..10_000 {
@@ -407,13 +410,17 @@ fn an_ungated_voice_carries_the_dc_and_no_signal() {
             "an ungated voice is generating a signal"
         );
     }
+    // The DC term is a borrowed value, so its size is only checked with the data.
+    #[cfg(feature = "gpl-data")]
     assert_eq!(
         first,
-        0x800 * 0xff,
+        sid_gpl_data::VOICE_DC,
         "idle voice is not sitting at the DC term"
     );
 }
 
+// The measured zero level sits off-centre; the built-in model is centred.
+#[cfg(feature = "gpl-data")]
 #[test]
 fn the_output_is_asymmetric_as_the_hardware_is() {
     // The waveform's zero level sits well below the middle of its 12-bit range, so a
@@ -423,8 +430,8 @@ fn the_output_is_asymmetric_as_the_hardware_is() {
     //
     // Two things the obvious version of this test gets wrong:
     //   - measuring from the first cycle includes the attack ramp, where the voice
-    //     sits at the DC term. That floor is about 39% of the peak, so the ratio
-    //     check below passes on a model whose zero level is wrong;
+    //     sits at the DC term, so the ratio check below can pass on a model whose
+    //     zero level is wrong;
     //   - a low FREQ never walks the oscillator out of the bottom of its range.
     // So: charge the envelope to full first, then walk the whole range at one phase
     // per cycle.
@@ -448,15 +455,13 @@ fn the_output_is_asymmetric_as_the_hardware_is() {
         lo > 0,
         "output crosses zero, so the waveform is centred rather than hardware-offset: {lo}..{hi}"
     );
-    // The floor of the swing is the giveaway. The waveform's zero level sits at about
-    // a fifth of the way up its range, so the minimum output is about a fifth of the
-    // maximum. A model that put the zero level in the middle of the range has almost
-    // the whole of its negative excursion cancelled by the DC term instead, and its
-    // floor collapses towards zero while its peak stays high.
+    // The floor of the swing is the giveaway. A model that put the zero level in
+    // the middle of the range has almost the whole of its negative excursion
+    // cancelled by the DC term instead, and its floor collapses towards zero while
+    // its peak stays high.
     assert!(
         lo * 8 > hi,
-        "floor is {lo} against a peak of {hi}: the waveform's zero level looks centred, \
-         not at the ~22% of range the 6581 sits at"
+        "floor is {lo} against a peak of {hi}: the waveform's zero level looks centred"
     );
 }
 
@@ -511,8 +516,7 @@ fn release_takes_the_signal_swing_down_to_nothing() {
         release: 0x2,
     };
     // Let the release finish before measuring. A falling sweep at rate nibble 2
-    // is 756 rate periods of 63 cycles, so 100_000 cycles is comfortably past the
-    // end; measuring across the ramp would just re-measure how loud it was.
+    // takes well under 100_000 cycles, so that is comfortably past the end; measuring across the ramp would just re-measure how loud it was.
     for _ in 0..100_000 {
         v.tick(1000, 0, wave::SAWTOOTH, off, false);
     }

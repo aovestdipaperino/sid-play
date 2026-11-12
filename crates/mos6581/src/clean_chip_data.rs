@@ -175,6 +175,7 @@ pub(crate) const NOISE_CLOCK_BIT: u8 = 19;
 pub(crate) const NOISE_SHIFT_RELOAD: u32 = 0x7F_FFFF;
 
 #[cfg(test)]
+#[allow(clippy::assertions_on_constants)] // the tests check the constants themselves
 mod tests {
     use super::*;
 

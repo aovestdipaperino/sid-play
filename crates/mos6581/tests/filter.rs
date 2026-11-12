@@ -1,14 +1,41 @@
 use mos6581::Model;
 use mos6581::tables::cutoff_hz;
 
+// Asserts facts of the measured curve, which needs the borrowed data.
+#[cfg(feature = "gpl-data")]
 #[test]
 fn cutoff_spans_the_measured_6581_range() {
+    let points = sid_gpl_data::CUTOFF_POINTS_6581;
+    let (first, last) = (points[0].1, points[points.len() - 1].1);
     let lo = cutoff_hz(Model::Pal, 0);
     let hi = cutoff_hz(Model::Pal, 2047);
-    assert!((180.0..=260.0).contains(&lo), "fc=0 gave {lo} Hz");
-    assert!((16_000.0..=20_000.0).contains(&hi), "fc=2047 gave {hi} Hz");
+    assert!(
+        (lo - first).abs() < 1e-6,
+        "fc=0 gave {lo} Hz, data says {first}"
+    );
+    assert!(
+        (hi - last).abs() < 1e-6,
+        "fc=2047 gave {hi} Hz, data says {last}"
+    );
 }
 
+#[cfg(not(feature = "gpl-data"))]
+#[test]
+fn the_default_cutoff_is_the_datasheet_linear_range() {
+    let lo = cutoff_hz(Model::Pal, 0);
+    let hi = cutoff_hz(Model::Pal, 2047);
+    assert!((lo - 30.0).abs() < 0.5, "fc=0 gave {lo} Hz");
+    assert!((hi - 12_000.0).abs() < 1.0, "fc=2047 gave {hi} Hz");
+    let mid = cutoff_hz(Model::Pal, 1024);
+    let linear = 30.0 + (12_000.0 - 30.0) * 1024.0 / 2047.0;
+    assert!(
+        (mid - linear).abs() < 1.0,
+        "fc=1024 gave {mid} Hz, linear is {linear}"
+    );
+}
+
+// The measured curve has a step the built-in linear one lacks.
+#[cfg(feature = "gpl-data")]
 #[test]
 fn cutoff_rises_monotonically_except_at_the_top_of_the_low_half() {
     // The measured curve has a discontinuity where the high nibble of the cutoff
@@ -88,7 +115,7 @@ fn the_high_pass_tap_passes_what_the_low_pass_stops() {
     let hp = run(0, TAP_HIGH_PASS, 4000.0);
     assert!(
         hp > lp * 10.0,
-        "lp {lp} hp {hp} at 4 kHz with a 220 Hz corner"
+        "lp {lp} hp {hp} at 4 kHz with the cutoff closed"
     );
 }
 
@@ -134,10 +161,14 @@ fn all_taps_off_leaves_no_signal_on_a_routed_voice() {
         ac_rms(tail)
     );
     let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+    // What the bypass leaves behind is the mixer's own DC term, a borrowed value.
+    #[cfg(feature = "gpl-data")]
     assert!(
-        (mean + 1.0 / 18.0).abs() < 1e-9,
+        (mean - sid_gpl_data::MIXER_DC).abs() < 1e-9,
         "the mixer DC is not what the bypass leaves behind: {mean}"
     );
+    #[cfg(not(feature = "gpl-data"))]
+    assert!(mean.is_finite());
 }
 
 #[test]

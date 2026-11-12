@@ -34,36 +34,72 @@ fn attack_cycles(nibble: u8) -> u64 {
 }
 
 #[test]
-fn attack_ignores_the_exponential_divider() {
+fn attack_is_a_whole_number_of_rate_periods_and_slower_at_higher_nibbles() {
     // Attack steps once per rate period, so a full sweep is exactly 255 of them.
-    // At nibble 1 the rate period is 32 cycles.
-    assert_eq!(attack_cycles(1), 255 * 32);
+    let mut prev = 0;
+    for nibble in 0..=0xfu8 {
+        let cycles = attack_cycles(nibble);
+        assert_eq!(cycles % 255, 0, "nibble {nibble}: {cycles} cycles");
+        assert!(
+            cycles > prev,
+            "nibble {nibble} was not slower than the last"
+        );
+        prev = cycles;
+    }
 }
 
+// Pins the measured rate periods, so it needs the borrowed data.
+#[cfg(feature = "gpl-data")]
 #[test]
-fn attack_at_the_fastest_rate_is_the_same_255_steps() {
-    assert_eq!(attack_cycles(0), 255 * 9);
+fn attack_takes_255_steps_of_the_measured_rate_period() {
+    use sid_gpl_data::ENV_RATE_PERIOD;
+    for nibble in [0u8, 1, 0xf] {
+        let period = u64::from(ENV_RATE_PERIOD[usize::from(nibble)]);
+        assert_eq!(attack_cycles(nibble), 255 * period, "nibble {nibble}");
+    }
 }
 
-#[test]
-fn a_falling_sweep_takes_the_measured_756_rate_periods() {
-    // Measured on real silicon: a complete falling envelope walks
-    // 162*1 + 39*2 + 28*4 + 12*8 + 8*16 + 6*30 = 756 rate-counter periods,
-    // because the exponential divider loads 1,2,4,8,16,30 at counter values
-    // 255,93,54,26,14,6. At nibble 1 (period 32) that is 32_352 cycles.
+/// Cycles for a release from 255 to 0 at the given release nibble.
+fn release_cycles(nibble: u8) -> u64 {
     let release = Adsr {
-        release: 0x1,
+        release: nibble,
         ..Adsr::default()
     };
     let mut env = Envelope::default();
     charge(&mut env);
-
     let mut cycles = 0;
     while env.level() != 0 && cycles < 40_000_000 {
         env.tick(false, release);
         cycles += 1;
     }
-    assert_eq!(cycles, 756 * 32, "falling sweep is not 756 periods");
+    assert_eq!(env.level(), 0, "release never reached zero");
+    cycles
+}
+
+#[test]
+fn a_falling_sweep_is_slower_than_the_same_rate_attack() {
+    // Decay and release are exponential, so they take longer than the linear
+    // attack at the same rate nibble.
+    assert!(release_cycles(1) > attack_cycles(1));
+}
+
+// Pins the measured divider breakpoints, so it needs the borrowed data.
+#[cfg(feature = "gpl-data")]
+#[test]
+fn a_falling_sweep_takes_the_rate_periods_the_breakpoints_imply() {
+    use sid_gpl_data::{ENV_EXPONENTIAL_BREAKPOINTS, ENV_RATE_PERIOD};
+    // The divider loads at each breakpoint level and holds until the next.
+    let mut divider = 1u64;
+    let mut periods = 0u64;
+    for level in (1..=255u8).rev() {
+        if let Some(e) = ENV_EXPONENTIAL_BREAKPOINTS.iter().find(|e| e.0 == level) {
+            divider = u64::from(e.1);
+        }
+        periods += divider;
+    }
+    let nibble = 1u8;
+    let period = u64::from(ENV_RATE_PERIOD[usize::from(nibble)]);
+    assert_eq!(release_cycles(nibble), periods * period);
 }
 
 #[test]
@@ -205,20 +241,47 @@ fn register_nibbles_split_high_and_low() {
 }
 
 #[test]
-fn rewriting_the_rate_register_mid_envelope_delays_the_step_to_the_counter_wrap() {
-    // The ADSR-delay bug. The rate counter is 15 bits and the envelope step fires
-    // only when it exactly equals the current period, so switching to a faster
-    // rate whose period the counter has already passed does not step on the next
-    // cycle: the counter runs on to 0x8000, wraps to 1, and only then counts up to
-    // the new period.
+fn rewriting_the_rate_register_to_a_faster_rate_delays_the_step() {
+    // The ADSR-delay bug: the step fires only when the rate counter exactly
+    // equals the period, so a counter already past a new, faster period has to
+    // run on to the wrap before the step comes.
     let slow = Adsr {
-        attack: 0xf, // period 31_251
+        attack: 0xf,
         ..Adsr::default()
     };
     let fast = Adsr {
-        attack: 0x0, // period 9
+        attack: 0x0,
         ..Adsr::default()
     };
+    let mut env = Envelope::default();
+    for _ in 0..100 {
+        env.tick(true, slow);
+    }
+    assert_eq!(env.level(), 0, "the slow rate stepped too early");
+    let mut cycles = 1;
+    env.tick(true, fast);
+    while env.level() == 0 && cycles < 100_000 {
+        env.tick(true, fast);
+        cycles += 1;
+    }
+    assert_eq!(env.level(), 1);
+    assert!(cycles > 10_000, "step came after only {cycles} cycles");
+}
+
+// The exact cycle count depends on the borrowed period and wrap constants.
+#[cfg(feature = "gpl-data")]
+#[test]
+fn the_delayed_step_lands_on_the_counter_wrap_plus_the_new_period() {
+    use sid_gpl_data::{ENV_RATE_COUNTER_SKIPS_ZERO, ENV_RATE_PERIOD};
+    let slow = Adsr {
+        attack: 0xf,
+        ..Adsr::default()
+    };
+    let fast = Adsr {
+        attack: 0x0,
+        ..Adsr::default()
+    };
+    let fast_period = u32::from(ENV_RATE_PERIOD[0]);
     let warm = 100;
 
     let mut env = Envelope::default();
@@ -227,21 +290,18 @@ fn rewriting_the_rate_register_mid_envelope_delays_the_step_to_the_counter_wrap(
     }
     assert_eq!(env.level(), 0, "the slow rate stepped too early");
 
-    // One cycle at the new, faster rate must still not step.
     let mut cycles = 1;
     env.tick(true, fast);
     assert_eq!(env.level(), 0, "the step ignored the delay bug");
 
-    // From a counter of `warm`: (0x8000 - warm) cycles to reach the wrap, which
-    // lands on 1 rather than 0, then (period - 1) more to reach the period.
-    let expected = (0x8000 - warm) + (9 - 1);
-    while env.level() == 0 && cycles < 40_000 {
+    // The 15-bit counter wraps after (2^15 - warm) cycles, restarts at 0 or 1
+    // depending on the wrap rule, then counts up to the new period.
+    let restart = u32::from(ENV_RATE_COUNTER_SKIPS_ZERO);
+    let expected = ((1u32 << 15) - warm) + (fast_period - restart);
+    while env.level() == 0 && cycles < 100_000 {
         env.tick(true, fast);
         cycles += 1;
     }
-    assert_eq!(
-        cycles, expected,
-        "step came after {cycles} cycles, expected {expected} from the wrap"
-    );
+    assert_eq!(cycles, expected);
     assert_eq!(env.level(), 1);
 }

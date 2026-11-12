@@ -5,6 +5,8 @@
 
 mod fc;
 
+pub mod default;
+
 /// Four combination waveforms, indexed by the 12-bit phase, each an 8-bit
 /// amplitude that the oscillator scales up to its 12-bit output range.
 pub struct WaveTables {
@@ -18,6 +20,7 @@ pub struct WaveTables {
     pub pst: [u8; 4096],
 }
 
+#[cfg(feature = "gpl-data")]
 const fn from_data(d: sid_gpl_data::WaveData) -> WaveTables {
     WaveTables {
         st: d.st,
@@ -27,15 +30,20 @@ const fn from_data(d: sid_gpl_data::WaveData) -> WaveTables {
     }
 }
 
+#[cfg(feature = "gpl-data")]
 /// Measured 6581 combined waveforms (reSID data, GPL-2.0, via `sid-gpl-data`).
 pub static WAVE6581: WaveTables = from_data(sid_gpl_data::WAVE6581);
+#[cfg(feature = "gpl-data")]
 /// Measured 8580 combined waveforms (reSID data, GPL-2.0, via `sid-gpl-data`).
 pub static WAVE8580: WaveTables = from_data(sid_gpl_data::WAVE8580);
 
 /// The 6581 is the modelled chip, so both clock variants share its tables.
 pub fn for_model(model: crate::Model) -> &'static WaveTables {
     match model {
+        #[cfg(feature = "gpl-data")]
         crate::Model::Ntsc | crate::Model::Pal => &WAVE6581,
+        #[cfg(not(feature = "gpl-data"))]
+        crate::Model::Ntsc | crate::Model::Pal => &default::WAVE_AND,
     }
 }
 
@@ -50,13 +58,12 @@ pub fn cutoff_hz(model: crate::Model, fc: u16) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{WAVE6581, WAVE8580};
-
     #[test]
     fn both_clock_variants_share_the_6581_tables() {
         let a = super::for_model(crate::Model::Pal);
         let b = super::for_model(crate::Model::Ntsc);
         assert!(std::ptr::eq(a, b), "the two clock rates resolved apart");
-        assert!(!std::ptr::eq(&WAVE6581, &WAVE8580));
+        #[cfg(feature = "gpl-data")]
+        assert!(!std::ptr::eq(&super::WAVE6581, &super::WAVE8580));
     }
 }

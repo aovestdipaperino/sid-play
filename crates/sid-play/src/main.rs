@@ -9,6 +9,8 @@
 //! `cargo run --release -p sid-play --bin render -- tune.sid [--subsong N] [--seconds S]
 //!         [--ntsc] [--probe] [--out file.wav]`
 
+mod poweron;
+
 use mos6510::{Bus, Cpu};
 use mos6581::{Model, Sid};
 use sid_play::sink::{SampleFormat, Sink, WavSink, WavSpec};
@@ -631,7 +633,7 @@ fn write_halt_loop(ram: &mut [u8; 0x1_0000], halt: u16) {
 
 /// Lay down the machine state a tune expects to find, before its init runs.
 fn write_machine_state(ram: &mut [u8; 0x1_0000], pal: bool, load: u16, end: u16) {
-    for (addr, value) in sid_gpl_data::POWERON.iter().enumerate() {
+    for (addr, value) in poweron::POWERON.iter().enumerate() {
         ram[addr] = *value;
     }
     // The video-standard flag the Kernal keeps in $02A6: 1 for PAL, 0 for NTSC.

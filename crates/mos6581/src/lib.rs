@@ -1,6 +1,8 @@
 //! MOS 6581 SID, emulated one step per Φ2 cycle.
 
 mod chip_data;
+#[cfg(not(feature = "gpl-data"))]
+mod clean_chip_data;
 pub mod envelope;
 pub mod extfilt;
 pub mod filter;

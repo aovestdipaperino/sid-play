@@ -10,7 +10,12 @@ description = "Play C64 PSID tunes through the mos6581 SID emulator"
 [dependencies]
 mos6510 = "0.1"
 mos6581 = { path = "../mos6581", version = "0.1" }
-sid-gpl-data = { path = "../sid-gpl-data", version = "0.1" }
+sid-gpl-data = { path = "../sid-gpl-data", version = "0.1", optional = true }
+
+[features]
+default = []
+# Measured tables and the libsidplayfp power-on pattern. Makes the build GPL-2.0.
+gpl-data = ["mos6581/gpl-data", "dep:sid-gpl-data"]
 
 [[bin]]
 name = "render"
