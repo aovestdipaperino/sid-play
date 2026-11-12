@@ -95,17 +95,27 @@ fn the_harness_renders_an_audible_unclipped_tune() {
     );
 }
 
-/// The second fixture is driven the way most real tunes are: its init installs
-/// a handler at the interrupt vector and starts CIA 1 timer A, and the handler —
-/// not the harness — calls the play routine. A single interrupt is not enough;
-/// the whole point is that the processor keeps taking them, so the render must
-/// still be carrying audio at the end rather than only at the start.
+/// The second fixture is driven by its own interrupts: its init installs a
+/// handler at the interrupt vector and starts CIA 1 timer A, and the handler,
+/// not the harness, calls the play routine. The shipped file has a play
+/// address, which makes the harness the player (see
+/// `a_vbl_song_with_its_own_fffe_handler_and_a_play_address_is_raster_driven`),
+/// so this test clears it to 0, the PSID way of saying the tune drives itself.
+/// A single interrupt is not enough; the whole point is that the processor
+/// keeps taking them, so the render must still be carrying audio at the end
+/// rather than only at the start.
 #[test]
 fn an_irq_driven_tune_keeps_taking_interrupts() {
-    let tune = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("irq.sid");
+    let mut bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("irq.sid"),
+    )
+    .unwrap();
+    bytes[0x0c..0x0e].copy_from_slice(&[0, 0]);
+    let tune = std::env::temp_dir().join(format!("rust-sid-irq-play0-{}.sid", std::process::id()));
+    std::fs::write(&tune, &bytes).unwrap();
     let mut out = std::env::temp_dir();
     out.push(format!(
         "rust-sid-irq-{}-{}.wav",
@@ -122,6 +132,7 @@ fn an_irq_driven_tune_keeps_taking_interrupts() {
         .arg(&out)
         .output()
         .expect("the harness binary would not run");
+    std::fs::remove_file(&tune).ok();
     assert!(run.status.success(), "the harness exited with failure");
 
     let report = String::from_utf8_lossy(&run.stdout);
@@ -565,6 +576,186 @@ fn a_vbl_song_that_starts_the_cia_itself_is_still_called_once_per_frame() {
     ];
     let s = render_built("vbl-cia", &psid(&code, 0x1015, 0), "2", &[]);
     assert_frames(&s, PAL_FRAME, "VBL song with its own CIA timer");
+}
+
+/// A non-zero play address means the player calls play (PSID format, +0C
+/// playAddress: "The address of the machine code subroutine called
+/// periodically to play the song"). A tune whose init points $0314 at a
+/// handler of its own that never calls play, and returns with interrupts
+/// masked, must still have play called at its song's rate. The handler writes
+/// a different SID register from play, so any call to it would show up as an
+/// extra chip write.
+#[test]
+fn a_play_address_drives_play_even_when_init_installs_its_own_0314_handler() {
+    // $1000 LDA #$12 / STA $0314 / LDA #$10 / STA $0315 / SEI / RTS
+    // $100C LDA #$0F / STA $D418 / RTS                (play)
+    // $1012 LDA #$01 / STA $D417 / JMP $EA31          (handler, never calls play)
+    let code = [
+        0xa9, 0x12, 0x8d, 0x14, 0x03, 0xa9, 0x10, 0x8d, 0x15, 0x03, 0x78, 0x60, 0xa9, 0x0f, 0x8d,
+        0x18, 0xd4, 0x60, 0xa9, 0x01, 0x8d, 0x17, 0xd4, 0x4c, 0x31, 0xea,
+    ];
+    let s = render_built("play-own-cinv", &psid(&code, 0x100c, 1), "2", &[]);
+    assert_frames(&s, KERNAL_LATCH_PAL + 1.0, "CIA song with its own $0314");
+    assert_eq!(
+        s.chip_writes as f64, s.frames,
+        "chip writes are not exactly one per play call"
+    );
+}
+
+/// A VBL song with a play address is called once per raster frame even when
+/// its init installs its own $0314 handler (which itself calls play) and
+/// enables interrupts. The KERNAL timer A interrupt is running underneath, so
+/// any CIA interrupt reaching the handler would show up as extra play calls.
+#[test]
+fn a_vbl_song_with_its_own_0314_handler_is_called_once_per_raster_frame() {
+    // $1000 LDA #$12 / STA $0314 / LDA #$10 / STA $0315 / CLI / RTS
+    // $100C LDA #$0F / STA $D418 / RTS                (play)
+    // $1012 JSR $100C / JMP $EA31                     (handler, calls play)
+    let code = [
+        0xa9, 0x12, 0x8d, 0x14, 0x03, 0xa9, 0x10, 0x8d, 0x15, 0x03, 0x58, 0x60, 0xa9, 0x0f, 0x8d,
+        0x18, 0xd4, 0x60, 0x20, 0x0c, 0x10, 0x4c, 0x31, 0xea,
+    ];
+    let s = render_built("vbl-own-cinv", &psid(&code, 0x100c, 0), "2", &[]);
+    assert_frames(&s, PAL_FRAME, "VBL song with its own $0314");
+    assert_eq!(
+        s.chip_writes as f64, s.frames,
+        "play ran more often than the harness called it"
+    );
+}
+
+/// The shipped `irq.sid` is a VBL song with a play address whose init installs
+/// its own $FFFE handler. The play address decides: the harness calls play
+/// once per raster frame, and the tune's handler is not what drives it.
+#[test]
+fn a_vbl_song_with_its_own_fffe_handler_and_a_play_address_is_raster_driven() {
+    let bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("irq.sid"),
+    )
+    .unwrap();
+    let s = render_built("irq-fffe-play", &bytes, "2", &[]);
+    assert_frames(&s, PAL_FRAME, "irq.sid with its play address");
+}
+
+/// CIA 1 timer A runs from reset with its interrupt enabled, whatever the
+/// song's speed bit (the KERNAL's $FF6E writes $81 to $DC0D). A VBL song with
+/// no play address whose init only points $0314 at its handler and enables
+/// interrupts therefore has that handler called at the KERNAL timer rate.
+#[test]
+fn a_vbl_song_without_a_play_address_runs_its_0314_handler_on_the_kernal_timer() {
+    // $1000 LDA #$0C / STA $0314 / LDA #$10 / STA $0315 / CLI / RTS
+    // $100C LDA #$0F / STA $D418 / JMP $EA31     (the handler)
+    let code = [
+        0xa9, 0x0c, 0x8d, 0x14, 0x03, 0xa9, 0x10, 0x8d, 0x15, 0x03, 0x58, 0x60, 0xa9, 0x0f, 0x8d,
+        0x18, 0xd4, 0x4c, 0x31, 0xea,
+    ];
+    let s = render_built("vbl-cinv", &psid(&code, 0, 0), "2", &[]);
+    assert_eq!(
+        s.frames, 0.0,
+        "the harness called a play routine the tune does not have"
+    );
+    let calls = s.chip_writes as f64;
+    let expected = s.cycles / (KERNAL_LATCH_PAL + 1.0);
+    assert!(
+        (calls - expected).abs() <= 2.0,
+        "the $0314 handler ran {calls} times over {} cycles, expected {expected:.1}",
+        s.cycles
+    );
+}
+
+/// An init that writes $EA7E or $EA81 (the KERNAL handler's acknowledge and
+/// register-restore points) into $0314 installs no handler of its own; with a
+/// play address, play is called at the song's rate either way.
+#[test]
+fn a_tune_that_points_0314_at_ea7e_or_ea81_is_still_played() {
+    for lo in [0x7e, 0x81] {
+        // $1000 SEI / LDA #lo / STA $0314 / LDA #$EA / STA $0315 / RTS
+        // $100C RTS (play)
+        let code = [
+            0x78, 0xa9, lo, 0x8d, 0x14, 0x03, 0xa9, 0xea, 0x8d, 0x15, 0x03, 0x60, 0x60,
+        ];
+        let s = render_built(
+            &format!("cinv-ea{lo:02x}"),
+            &psid(&code, 0x100c, 1),
+            "2",
+            &[],
+        );
+        assert_frames(
+            &s,
+            KERNAL_LATCH_PAL + 1.0,
+            &format!("play with $0314 = $EA{lo:02X}"),
+        );
+    }
+}
+
+/// A $0314 handler with no play address may chain on to $EA7E (which reads
+/// $DC0D) or acknowledge CIA 1 itself and chain on to $EA81 (which only
+/// restores the registers). Both must keep it running at the timer rate.
+#[test]
+fn a_0314_handler_can_chain_to_ea7e_or_ea81() {
+    for (name, tail) in [
+        // LDA #$0F / STA $D418 / JMP $EA7E
+        (
+            "ea7e",
+            &[0xa9, 0x0f, 0x8d, 0x18, 0xd4, 0x4c, 0x7e, 0xea][..],
+        ),
+        // LDA $DC0D / LDA #$0F / STA $D418 / JMP $EA81
+        (
+            "ea81",
+            &[
+                0xad, 0x0d, 0xdc, 0xa9, 0x0f, 0x8d, 0x18, 0xd4, 0x4c, 0x81, 0xea,
+            ][..],
+        ),
+    ] {
+        // $1000 LDA #$0C / STA $0314 / LDA #$10 / STA $0315 / CLI / RTS
+        let mut code = vec![
+            0xa9, 0x0c, 0x8d, 0x14, 0x03, 0xa9, 0x10, 0x8d, 0x15, 0x03, 0x58, 0x60,
+        ];
+        code.extend_from_slice(tail);
+        let s = render_built(&format!("chain-{name}"), &psid(&code, 0, 1), "2", &[]);
+        let calls = s.chip_writes as f64;
+        let expected = s.cycles / (KERNAL_LATCH_PAL + 1.0);
+        assert!(
+            (calls - expected).abs() <= 2.0,
+            "chaining to ${name}: the handler ran {calls} times over {} cycles, expected {expected:.1}",
+            s.cycles
+        );
+    }
+}
+
+/// A tune whose block covers $EA31-$EA86 keeps its own bytes there: the
+/// harness does not lay down its stand-in chain. This tune puts its own code
+/// at $EA31, which writes a second SID register and then acknowledges and
+/// returns; a handler chaining to $EA31 must reach that code, so every call
+/// gives two chip writes.
+#[test]
+fn a_block_over_ea31_keeps_its_own_code_there() {
+    // $E000 LDA #$0C / STA $0314 / LDA #$E0 / STA $0315 / CLI / RTS
+    // $E00C LDA #$0F / STA $D418 / JMP $EA31        (the handler)
+    // $EA31 LDA #$01 / STA $D417 / LDA $DC0D / PLA / TAY / PLA / TAX / PLA / RTI
+    let mut data = vec![0u8; 0xa90];
+    data[..20].copy_from_slice(&[
+        0xa9, 0x0c, 0x8d, 0x14, 0x03, 0xa9, 0xe0, 0x8d, 0x15, 0x03, 0x58, 0x60, 0xa9, 0x0f, 0x8d,
+        0x18, 0xd4, 0x4c, 0x31, 0xea,
+    ]);
+    data[0xa31..0xa31 + 14].copy_from_slice(&[
+        0xa9, 0x01, 0x8d, 0x17, 0xd4, 0xad, 0x0d, 0xdc, 0x68, 0xa8, 0x68, 0xaa, 0x68, 0x40,
+    ]);
+    let s = render_built(
+        "own-ea31",
+        &psid_v(2, 0xe000, 0xe000, 0, 1, &data),
+        "2",
+        &[],
+    );
+    let calls = s.chip_writes as f64 / 2.0;
+    let expected = s.cycles / (KERNAL_LATCH_PAL + 1.0);
+    assert!(
+        (calls - expected).abs() <= 2.0,
+        "the tune's own $EA31 code ran {calls} times over {} cycles, expected {expected:.1}",
+        s.cycles
+    );
 }
 
 /// The header is 0x76 bytes for v1 and 0x7C for v2 and later, and nothing

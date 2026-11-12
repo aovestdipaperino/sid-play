@@ -55,7 +55,6 @@ const STUB_SPAN: usize = 0x30;
 /// CIA 1 and restores the registers ($EA7E-$EA86). See [`write_kernal_chain`].
 const KERNAL_IRQ: u16 = 0xea31;
 const KERNAL_IRQ_END: u16 = 0xea7e;
-const KERNAL_IRQ_RESTORE: u16 = 0xea81;
 /// $0314-$0315, CINV: the RAM vector the KERNAL's IRQ entry jumps through.
 const CINV: u16 = 0x0314;
 
@@ -527,10 +526,11 @@ impl Cia {
         self.flags & self.mask != 0
     }
 
-    /// Timer A as the KERNAL leaves it after reset, which is where the PSID
-    /// format says a CIA-speed song finds it before init: the 1/60 s latch for
-    /// the video standard, the counter loaded from it, running in continuous
-    /// mode, and the timer A interrupt enabled. See [`KERNAL_TIMER_A_PAL`].
+    /// Timer A as the KERNAL leaves it after reset, which is where every song
+    /// finds it before init (see `setup` for why VBL songs too): the 1/60 s
+    /// latch for the video standard, the counter loaded from it, running in
+    /// continuous mode, and the timer A interrupt enabled. See
+    /// [`KERNAL_TIMER_A_PAL`].
     ///
     /// The KERNAL writes `$11` to the control register: start, and the
     /// force-load strobe, which loads the counter. Bit 3 clear is continuous
@@ -975,18 +975,31 @@ fn setup(
             write_play_stub(&mut m.ram, stubs, loaded.play);
         }
         write_halt_loop(&mut m.ram, stubs.halt);
-        // A CIA-speed song is played on CIA 1 timer A, and it finds the timer
-        // already running at the KERNAL's rate before its init is called. A
-        // tune that only rewrites the latch to set its tempo relies on this.
-        if loaded.cia_clock {
-            m.cia.borrow_mut().kernal_timer_a(pal);
-        }
+        // Every song finds CIA 1 timer A as the KERNAL leaves it after reset:
+        // running at the 1/60 s latch with its interrupt enabled ($FDDD and
+        // $FF6E, see [`KERNAL_TIMER_A_PAL`]). The PSID format's environment
+        // has the counter running for every song ("set to 60Hz ... with the
+        // counter running"). A CIA-speed song is played on it, and a tune
+        // that only rewrites the latch to set its tempo relies on it.
+        //
+        // The interrupt is enabled for a VBL song too. The format says CIA
+        // IRQs are "active when speed flag is 1" and that a VBL song gets a
+        // raster IRQ instead, but this harness has no VIC-II to raise one. A
+        // VBL song with a play address does not need it: the harness calls
+        // play on the raster frame and does not deliver interrupts at all
+        // (see `Harness::cycle`). A VBL song with no play address that
+        // installs a $0314 handler and enables interrupts does need some
+        // periodic interrupt, and on a real machine the KERNAL's timer A is
+        // the one running after reset, so it is the stand-in, at 60 Hz rather
+        // than the frame rate.
+        m.cia.borrow_mut().kernal_timer_a(pal);
         // The KERNAL's interrupt chain: the hardware vector leads to an entry
         // that saves the registers and jumps through $0314, and $0314 leads
-        // to a handler that acknowledges CIA 1 and returns. A tune that never
-        // installs a handler at either level leaves both in place and the
-        // harness can tell; a tune that installs one at either level owns its
-        // own timing. $0314 is set here even though the power-on image holds
+        // to a handler that acknowledges CIA 1 and returns. A tune with play
+        // address 0 that installs a handler at either level is driven by it;
+        // one that installs none is acknowledged and nothing more. A tune
+        // with a play address is played by the harness whatever it installs
+        // here (see `start`). $0314 is set here even though the power-on image holds
         // the KERNAL's $EA31, because that address is RAM here and may hold
         // the tune.
         write_irq_entry(&mut m.ram, stubs.entry);
@@ -1035,10 +1048,16 @@ fn start(
         harness.cycle(&mut cpu);
         budget -= 1;
     }
-    // Whose handler is installed decides who drives the frame. A tune with no
-    // play address at all is driven purely by its own interrupts, and so is a
-    // tune that installed a handler at $FFFE or at $0314.
-    harness.frame_clock = harness.has_play_stub && harness.default_chain();
+    // The play address decides who drives the tune. The PSID format defines
+    // it (+0C playAddress) as "the address of the machine code subroutine
+    // called periodically to play the song", and gives 0 as the value that
+    // means the tune installs an interrupt handler to call its play routine
+    // itself. So a non-zero play address is called by the harness, at the
+    // rate the speed bit gives (raster frame or timer A), whatever handler
+    // init left at $0314 or $FFFE; a handler there that does not call play,
+    // or an init that returns with interrupts masked, must not silence the
+    // song. Only a tune with play address 0 is driven by its own interrupts.
+    harness.frame_clock = harness.has_play_stub;
     let init_returned = returned(&cpu) && !cpu.jammed();
     if harness.frame_clock {
         // Clears an interrupt decision latched under the CIA line before the harness took over.
@@ -1067,9 +1086,9 @@ struct Harness {
     /// The song's speed bit: true means play is driven by CIA 1 timer A
     /// underflows, false by the raster frame.
     cia_clock: bool,
-    /// Only a tune that left the interrupt vector to us is played on a harness
-    /// clock; a tune that installed its own handler owns its own timing, and
-    /// ticking it as well would call a play routine it is not using.
+    /// True when the tune has a play address: the harness calls it on the
+    /// song's clock and delivers no interrupts. False for a tune with play
+    /// address 0, which is driven by its own interrupt handler.
     frame_clock: bool,
     /// Interrupts taken and frames driven, for the summary line.
     irqs: u64,
@@ -1122,7 +1141,7 @@ impl Harness {
         }
         let underflow = self.machine.borrow().cia.borrow_mut().tick();
         if self.frame_clock {
-            // The tune brought no handler, so the harness is the player. It
+            // The tune has a play address, so the harness is the player. It
             // cannot wait on the processor's interrupt flag, because a tune
             // initialised with interrupts masked never clears it — a real
             // machine reaches the player through the Kernal's own chain, which
@@ -1168,7 +1187,7 @@ impl Harness {
             // level latched from the last init cycle.
             cpu.set_irq(false);
         } else {
-            // The tune owns the interrupt vector, so it is driven by its CIA the
+            // The tune has no play address and drives itself, by its CIA the
             // same way it is on a real machine: the CIA's level-triggered line
             // is wired to the processor's, which samples it where the hardware
             // does.
@@ -1184,21 +1203,6 @@ impl Harness {
             .borrow_mut()
             .sid
             .render_cycles(1, &mut self.audio);
-    }
-
-    /// Whether both levels of the interrupt chain are still the harness's:
-    /// $FFFE leads to its entry, and $0314 to its handler or to one of the
-    /// KERNAL chain points it laid down. A vector pointing into the KERNAL's
-    /// handler means the KERNAL handles the interrupt, and that handler calls
-    /// nothing of the tune's, so a tune that writes $EA31 back into $0314 has
-    /// installed no handler of its own.
-    fn default_chain(&self) -> bool {
-        let m = self.machine.borrow();
-        let word = |a: u16| u16::from_le_bytes([m.ram[usize::from(a)], m.ram[usize::from(a + 1)]]);
-        let cinv = word(CINV);
-        let kernal = self.stubs.kernal_chain
-            && matches!(cinv, KERNAL_IRQ | KERNAL_IRQ_END | KERNAL_IRQ_RESTORE);
-        word(IRQ_VECTOR) == self.stubs.entry && (cinv == self.stubs.ack || kernal)
     }
 }
 
@@ -1503,6 +1507,100 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 0x0100 + 1, "first underflow after a force load of $0100");
+    }
+
+    /// The KERNAL chain stand-ins ($EA31 and $EA7E-$EA86) are laid down only
+    /// when the tune's block leaves all of $EA31-$EA86 free. The block is the
+    /// half-open range [load, load + len).
+    #[test]
+    fn the_kernal_chain_is_written_only_when_the_block_leaves_it_free() {
+        let chain = |load: u16, len: usize| place_stubs(load, len).unwrap().kernal_chain;
+        // Ends exactly at $EA31, so $EA31 itself is free.
+        assert!(chain(0xe000, 0xa31));
+        // Ends one byte later, covering $EA31.
+        assert!(!chain(0xe000, 0xa32));
+        // Starts on the RTI at $EA86.
+        assert!(!chain(0xea86, 0x10));
+        // Starts just past it.
+        assert!(chain(0xea87, 0x10));
+        // Covers $EA7E-$EA86 only.
+        assert!(!chain(0xea80, 0x10));
+        // Nowhere near.
+        assert!(chain(0x1000, 0x100));
+    }
+
+    /// When the tune's block covers the chain, its own bytes stay there: the
+    /// harness writes neither $EA31 nor $EA7E-$EA86, even the part of that
+    /// range the block does not reach.
+    #[test]
+    fn a_block_over_the_kernal_chain_keeps_its_own_bytes() {
+        // $E000-$EA4F, filled with $EE: covers $EA31 but not $EA7E.
+        let loaded = Loaded {
+            load: 0xe000,
+            init: 0xe000,
+            play: 0,
+            song: 1,
+            songs: 1,
+            cia_clock: true,
+            clock_hint: 0,
+            chip_hint: 0,
+            data: vec![0xee; 0xa50],
+        };
+        let stubs = place_stubs(loaded.load, loaded.data.len()).unwrap();
+        assert!(!stubs.kernal_chain);
+        let m = setup(
+            Model::Pal,
+            &sid_play::poweron::POWERON,
+            &loaded,
+            true,
+            stubs,
+        );
+        let m = m.borrow();
+        assert_eq!(&m.ram[0xea31..0xea34], &[0xee; 3], "$EA31 was overwritten");
+        assert_eq!(
+            &m.ram[0xea7e..0xea87],
+            &[0; 9],
+            "$EA7E-$EA86 was written although the chain was not laid down"
+        );
+        // The default handler still goes to the harness's own stub.
+        let cinv = u16::from_le_bytes([m.ram[0x0314], m.ram[0x0315]]);
+        assert_eq!(cinv, stubs.ack);
+    }
+
+    /// CIA 1 timer A is in the KERNAL's post-reset state for every song, not
+    /// only for CIA-speed ones: running at the 1/60 s latch with its
+    /// interrupt enabled.
+    #[test]
+    fn every_song_finds_the_kernal_timer_running() {
+        for cia_clock in [false, true] {
+            let loaded = Loaded {
+                load: 0x1000,
+                init: 0x1000,
+                play: 0x1000,
+                song: 1,
+                songs: 1,
+                cia_clock,
+                clock_hint: 0,
+                chip_hint: 0,
+                data: vec![0x60],
+            };
+            let stubs = place_stubs(loaded.load, loaded.data.len()).unwrap();
+            let m = setup(
+                Model::Pal,
+                &sid_play::poweron::POWERON,
+                &loaded,
+                true,
+                stubs,
+            );
+            let m = m.borrow();
+            let cia = m.cia.borrow();
+            assert!(
+                cia.timer_a_running(),
+                "cia_clock={cia_clock}: timer stopped"
+            );
+            assert_eq!(cia.latch, KERNAL_TIMER_A_PAL, "cia_clock={cia_clock}");
+            assert_eq!(cia.mask & 0x01, 0x01, "cia_clock={cia_clock}: IRQ off");
+        }
     }
 
     #[test]
