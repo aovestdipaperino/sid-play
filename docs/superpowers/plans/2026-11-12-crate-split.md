@@ -759,7 +759,7 @@ If a value turns out equal to what the gpl build uses, that is fine only if the 
 
 - [ ] **Step 5c: Tests**
 
-Gate with `#[cfg(feature = "gpl-data")]` every test that pins a borrowed value (for example `MIXER_DC` in `tests/filter.rs`, the voice DC values in `tests/wave.rs`, the 756-period sweep in `tests/envelope.rs`), with a one-line comment why. Add default-build tests for the clean values where a property is testable (rate periods strictly increasing; breakpoints give a monotone falling envelope; noise output stays within 12 bits). Any test that asserts behaviour every SID must have and fails in the default build means a default is wrong: fix the default.
+Gate with `#[cfg(feature = "gpl-data")]` every test that pins a borrowed value (for example the mixer DC in `tests/filter.rs`, the voice DC values in `tests/wave.rs`, the 756-period sweep and the rate-counter wrap tests in `tests/envelope.rs`, the "bit 19" noise-clock tests in `tests/wave.rs`), with a one-line comment why. Because these files are relicensed in Task 5, a gated test must not keep the borrowed number as a literal: take the expected value from the `sid_gpl_data` constant (available to integration tests when the feature is on), or compute it from the constant, and remove the literal and any comment restating it. Add default-build tests for the clean values where a property is testable (rate periods strictly increasing; breakpoints give a monotone falling envelope; noise output stays within 12 bits). Any test that asserts behaviour every SID must have and fails in the default build means a default is wrong: fix the default.
 
 - [ ] **Step 5d: (verification happens in Steps 6-7 below)**
 
