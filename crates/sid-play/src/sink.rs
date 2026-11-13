@@ -342,6 +342,11 @@ impl Ring {
     }
 }
 
+/// How much audio the live sink's ring holds before `write` blocks: long
+/// enough to ride out a scheduling hiccup, short enough that stopping feels
+/// immediate. It is also how far the listener lags the render.
+pub const LIVE_BUFFER_SECONDS: f64 = 0.35;
+
 #[cfg(feature = "playback")]
 pub use audio::{AudioError, AudioSink};
 
@@ -355,9 +360,7 @@ mod audio {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    /// How much audio the ring holds before `write` blocks: long enough to ride
-    /// out a scheduling hiccup, short enough that stopping feels immediate.
-    const BUFFER_SECONDS: f64 = 0.35;
+    use super::LIVE_BUFFER_SECONDS as BUFFER_SECONDS;
 
     /// Formats the callback converts to, best first.
     const FORMATS: [SampleFormat; 8] = [

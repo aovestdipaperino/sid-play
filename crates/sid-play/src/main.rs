@@ -9,22 +9,42 @@
 //! block does not cover them.
 //!
 //! `cargo run --release -p sid-play --bin render -- tune.sid [--subsong N] [--seconds S]
-//!         [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio] [--out file.wav]`
+//!         [--songlengths FILE] [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio]
+//!         [--out file.wav] [--quiet]`
+//!
+//! Without `--seconds` the tune plays to its end: the length HVSC's
+//! `Songlengths.md5` gives for it (found above the tune, or named with
+//! `--songlengths`), or else until it has been silent for a few seconds, capped
+//! at ten minutes. On a terminal, a progress bar and a spectrum analyser drawn
+//! in braille run on stderr; `--quiet` turns them off.
 //!
 //! `--sink audio` plays through the default output device and needs a build
 //! with `--features playback`; `--out` applies only to `--sink wav`.
 
 use mos6510::{Bus, Cpu};
 use mos6581::{Model, Sid};
+use sid_play::display::{Length, Screen};
 use sid_play::sink::{SampleFormat, Sink, WavSink, WavSpec};
+use sid_play::songlength;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 const RATE: f64 = 44_100.0;
+
+/// With no known length, the tune ends once it has been this quiet for this
+/// long after making a sound...
+const SILENCE_SECONDS: f64 = 3.0;
+/// ...or this long if it never made one.
+const NEVER_HEARD_SECONDS: f64 = 10.0;
+/// The quietest sample peak that still counts as sound: about -54 dBFS.
+const SILENCE_LEVEL: f32 = 0.002;
+/// The longest an unknown-length tune plays; most loop forever.
+const MAX_SECONDS: f64 = 600.0;
 
 /// Where the harness put its own small routines. A tune loaded at $E000
 /// expects the whole top of memory as RAM, so these cannot live at a fixed
@@ -360,6 +380,10 @@ struct Psid {
     /// raster interrupt.
     speed: u32,
     flags: u8,
+    /// The header's three 32-byte text fields.
+    name: String,
+    author: String,
+    released: String,
 }
 
 /// A container resolved into something that can be placed in memory.
@@ -408,7 +432,20 @@ fn parse(bytes: &[u8]) -> Result<Psid, PsidError> {
         speed: u32be(0x12),
         // The flags field only exists from v2.
         flags: if version >= 2 { bytes[0x76] } else { 0 },
+        name: text_field(&bytes[0x16..0x36]),
+        author: text_field(&bytes[0x36..0x56]),
+        released: text_field(&bytes[0x56..0x76]),
     })
+}
+
+/// A header text field: Latin-1, padded with NULs.
+fn text_field(b: &[u8]) -> String {
+    b.iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| char::from(c))
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 /// The bit of the header's speed field that belongs to a 1-based song.
@@ -1045,14 +1082,19 @@ fn open_audio() -> Result<DynSink, Box<dyn Error>> {
     Err("this build has no audio output; rebuild with --features playback".into())
 }
 
-const USAGE: &str = "usage: render tune.sid [--subsong N] [--seconds S] [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio] [--out file.wav]";
+const USAGE: &str = "usage: render tune.sid [--subsong N] [--seconds S] [--songlengths FILE] [--ntsc] [--probe] [--poweron FILE] [--sink wav|audio] [--out file.wav] [--quiet]";
 
 struct Options {
     tune: Option<PathBuf>,
     /// 0-based, as the register the init routine reads is. Left unset to mean
     /// "whatever the tune's own header asks to start on".
     subsong: Option<u8>,
-    seconds: f64,
+    /// A fixed length. Unset means "to the end of the tune".
+    seconds: Option<f64>,
+    /// An HVSC `Songlengths.md5`; looked for above the tune when unset.
+    songlengths: Option<PathBuf>,
+    /// No progress bar or spectrum, even on a terminal.
+    quiet: bool,
     ntsc: bool,
     sink: SinkKind,
     /// Only read by the WAV sink.
@@ -1069,7 +1111,9 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
     let mut o = Options {
         tune: None,
         subsong: None,
-        seconds: 30.0,
+        seconds: None,
+        songlengths: None,
+        quiet: false,
         ntsc: false,
         sink: SinkKind::Wav,
         out: PathBuf::from("out.wav"),
@@ -1085,7 +1129,15 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
                 let v: u8 = args.next().ok_or("--subsong needs a value")?.parse()?;
                 o.subsong = Some(v);
             }
-            "--seconds" => o.seconds = args.next().ok_or("--seconds needs a value")?.parse()?,
+            "--seconds" => {
+                o.seconds = Some(args.next().ok_or("--seconds needs a value")?.parse()?);
+            }
+            "--songlengths" => {
+                o.songlengths = Some(PathBuf::from(
+                    args.next().ok_or("--songlengths needs a value")?,
+                ));
+            }
+            "--quiet" => o.quiet = true,
             "--sink" => {
                 o.sink = match args.next().ok_or("--sink needs a value")?.as_str() {
                     "wav" => SinkKind::Wav,
@@ -1386,6 +1438,28 @@ impl Harness {
     }
 }
 
+/// The tune's length from an HVSC songlength database, in seconds. A database
+/// named on the command line has to be readable; one found by looking above the
+/// tune is used only if it can be read.
+fn song_length(
+    named: Option<&std::path::Path>,
+    tune: &std::path::Path,
+    bytes: &[u8],
+    song: u8,
+) -> Result<Option<f64>, Box<dyn Error>> {
+    let database = match named {
+        Some(p) => {
+            std::fs::read(p).map_err(|e| format!("cannot read songlengths {}: {e}", p.display()))?
+        }
+        None => match songlength::find_database(tune).and_then(|p| std::fs::read(p).ok()) {
+            Some(d) => d,
+            None => return Ok(None),
+        },
+    };
+    let text = String::from_utf8_lossy(&database);
+    Ok(songlength::lookup(&text, &songlength::md5_hex(bytes), song))
+}
+
 fn main() -> std::process::ExitCode {
     // A named refusal has to reach the reader as the sentence that explains it,
     // not as the debug form of the variant.
@@ -1457,7 +1531,43 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let (mut cpu, mut harness) = start(&machine, stubs, pal, loaded.cia_clock, loaded.song);
 
-    let total = (opts.seconds * RATE) as usize;
+    // How long to play: what the caller asked for, else what the database
+    // says, else until the tune falls silent.
+    let length = match opts.seconds {
+        Some(s) => Length::Known(s),
+        None => match song_length(opts.songlengths.as_deref(), &path, &bytes, loaded.song)? {
+            Some(s) => Length::Known(s),
+            None => Length::UntilSilence(MAX_SECONDS),
+        },
+    };
+    let total = match length {
+        Length::Known(s) | Length::UntilSilence(s) => (s * RATE) as usize,
+    };
+    let silence_after = (SILENCE_SECONDS * RATE) as usize;
+    let never_heard_after = (NEVER_HEARD_SECONDS * RATE) as usize;
+
+    let mut screen = (!opts.quiet && std::io::stderr().is_terminal()).then(|| {
+        let mut title = match (psid.name.as_str(), psid.author.as_str()) {
+            ("", "") => path.display().to_string(),
+            (name, "") => name.to_owned(),
+            (name, author) => format!("{name} \u{b7} {author}"),
+        };
+        if !psid.released.is_empty() {
+            title.push_str(&format!(" ({})", psid.released));
+        }
+        title.push_str(&format!(
+            "  \x1b[0;2msong {}/{}, {}\x1b[0m",
+            loaded.song,
+            loaded.songs,
+            if pal { "PAL" } else { "NTSC" }
+        ));
+        // Live audio reaches the speaker one ring buffer after it is rendered.
+        let delay = match opts.sink {
+            SinkKind::Audio => (sid_play::sink::LIVE_BUFFER_SECONDS * RATE) as usize,
+            SinkKind::Wav => 0,
+        };
+        (Screen::new(title, RATE as f32, delay), delay)
+    });
     let mut sink: DynSink = match opts.sink {
         SinkKind::Wav => Box::new(BoxErr(WavSink::create(
             &opts.out,
@@ -1475,23 +1585,48 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Only kept under `--trace`, to report what the render actually sounds like
     // alongside where it went.
     let mut heard: Vec<f32> = Vec::new();
+    // Samples since the last one louder than `SILENCE_LEVEL`, and whether any
+    // has been.
+    let mut quiet_run = 0usize;
+    let mut sounded = false;
     while written < total {
         harness.cycle(&mut cpu);
         cycles += 1;
-        if harness.audio.len() >= 4096 {
-            if opts.trace {
-                heard.extend_from_slice(&harness.audio);
+        if harness.audio.len() < 4096 {
+            continue;
+        }
+        // The last block is cut to the length asked for, so a known length is
+        // rendered exactly.
+        let block = &harness.audio[..harness.audio.len().min(total - written)];
+        if opts.trace {
+            heard.extend_from_slice(block);
+        }
+        sink.write(block)?;
+        written += block.len();
+        for &s in block {
+            if s.abs() > SILENCE_LEVEL {
+                quiet_run = 0;
+                sounded = true;
+            } else {
+                quiet_run += 1;
             }
-            sink.write(&harness.audio)?;
-            written += harness.audio.len();
-            harness.audio.clear();
+        }
+        if let Some((screen, delay)) = screen.as_mut() {
+            screen.feed(block);
+            screen.draw(written.saturating_sub(*delay) as f64 / RATE, length, false)?;
+        }
+        harness.audio.clear();
+        if matches!(length, Length::UntilSilence(_))
+            && ((sounded && quiet_run >= silence_after)
+                || (!sounded && written >= never_heard_after))
+        {
+            break;
         }
     }
-    if !harness.audio.is_empty() {
-        written += harness.audio.len();
-        sink.write(&harness.audio)?;
-    }
     sink.finish()?;
+    if let Some((screen, _)) = screen.as_mut() {
+        screen.draw(written as f64 / RATE, length, true)?;
+    }
 
     let render_writes = machine.borrow().sid_writes.get();
     // The two registers that decide whether anything can be heard: the master
@@ -1803,6 +1938,9 @@ mod tests {
             start_song: 1,
             speed,
             flags: 0,
+            name: String::new(),
+            author: String::new(),
+            released: String::new(),
         };
         for (wanted, speed, cia) in [
             (31u8, 1u32 << 31, true),   // song 32

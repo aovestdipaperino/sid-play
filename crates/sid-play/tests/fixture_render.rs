@@ -818,3 +818,140 @@ fn the_loader_accepts_the_shortest_complete_files() {
         "a v2 file holding only a load address was accepted: {text}"
     );
 }
+
+// Song length. Without `--seconds` the render plays to the end of the tune: the
+// length an HVSC songlength database gives, or until the tune is silent.
+
+/// Render `bytes` laid out as an HVSC tree (`MUSICIANS/X/tune.sid` with the
+/// database at `DOCUMENTS/Songlengths.md5` when `database` is given) and
+/// return how many samples came out.
+fn render_samples(name: &str, bytes: &[u8], database: Option<&str>, extra: &[&str]) -> u64 {
+    let root = std::env::temp_dir().join(format!("sidplay-len-{}-{name}", std::process::id()));
+    let tune_dir = root.join("MUSICIANS").join("X");
+    std::fs::create_dir_all(&tune_dir).unwrap();
+    std::fs::create_dir_all(root.join("DOCUMENTS")).unwrap();
+    let tune = tune_dir.join("tune.sid");
+    std::fs::write(&tune, bytes).unwrap();
+    if let Some(db) = database {
+        std::fs::write(root.join("DOCUMENTS").join("Songlengths.md5"), db).unwrap();
+    }
+    let run = Command::new(harness())
+        .arg(&tune)
+        .args(extra)
+        .arg("--out")
+        .arg(root.join("out.wav"))
+        .output()
+        .expect("the harness binary would not run");
+    std::fs::remove_dir_all(&root).ok();
+    let report = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(
+        run.status.success(),
+        "the harness failed: {report}{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    figure_before(&report, "samples,")
+}
+
+fn scale_bytes() -> Vec<u8> {
+    std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("scale.sid"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_hvsc_database_above_the_tune_sets_its_length_exactly() {
+    let bytes = scale_bytes();
+    let db = format!(
+        "[Database]\n; /MUSICIANS/X/tune.sid\n{}=0:01.500\n",
+        sid_play::songlength::md5_hex(&bytes)
+    );
+    assert_eq!(render_samples("found", &bytes, Some(&db), &[]), 66_150);
+}
+
+#[test]
+fn a_named_database_is_used_and_seconds_overrides_it() {
+    let bytes = scale_bytes();
+    let path = std::env::temp_dir().join(format!("sidplay-named-{}.md5", std::process::id()));
+    std::fs::write(
+        &path,
+        format!("{}=0:02\n", sid_play::songlength::md5_hex(&bytes)),
+    )
+    .unwrap();
+    let named = path.to_str().unwrap();
+    assert_eq!(
+        render_samples("named", &bytes, None, &["--songlengths", named]),
+        88_200
+    );
+    assert_eq!(
+        render_samples(
+            "override",
+            &bytes,
+            None,
+            &["--songlengths", named, "--seconds", "1"]
+        ),
+        44_100
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn a_missing_named_database_is_an_error() {
+    let out = Command::new(harness())
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("scale.sid"),
+        )
+        .args(["--songlengths", "/nonexistent/Songlengths.md5"])
+        .output()
+        .expect("the harness ran");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read songlengths"));
+}
+
+#[test]
+fn a_tune_that_never_sounds_ends_after_ten_seconds() {
+    // Init and play are both a bare RTS: the chip never makes a sound.
+    let silent = psid(&[0x60], 0x1000, 0);
+    let samples = render_samples("silent", &silent, None, &[]);
+    assert!(
+        (441_000..441_000 + 4096).contains(&samples),
+        "a silent tune with no known length rendered {samples} samples"
+    );
+}
+
+/// A tune that sounds a note and then gates it off ends three seconds after
+/// the release has died away, not at the ten-minute cap.
+#[test]
+fn a_tune_that_falls_silent_ends_three_seconds_later() {
+    // init: full volume, voice 1 at A=0 D=0 S=15 R=0, a pulse at 50%, gated on.
+    // play: counts calls in $10FF and gates voice 1 off on the 50th (1 s in).
+    #[rustfmt::skip]
+    let code = [
+        0xa9, 0x0f, 0x8d, 0x18, 0xd4, // LDA #$0F, STA $D418
+        0xa9, 0x00, 0x8d, 0x05, 0xd4, // LDA #$00, STA $D405
+        0xa9, 0xf0, 0x8d, 0x06, 0xd4, // LDA #$F0, STA $D406
+        0xa9, 0x08, 0x8d, 0x03, 0xd4, // LDA #$08, STA $D403 (pulse width hi)
+        0xa9, 0x20, 0x8d, 0x01, 0xd4, // LDA #$20, STA $D401 (freq hi)
+        0xa9, 0x41, 0x8d, 0x04, 0xd4, // LDA #$41, STA $D404 (pulse, gate)
+        0x60,                         // RTS
+        // play, at $101F
+        0xee, 0xff, 0x10,             // INC $10FF
+        0xad, 0xff, 0x10,             // LDA $10FF
+        0xc9, 0x32,                   // CMP #50
+        0xd0, 0x05,                   // BNE +5
+        0xa9, 0x40, 0x8d, 0x04, 0xd4, // LDA #$40, STA $D404 (gate off)
+        0x60,                         // RTS
+    ];
+    let samples = render_samples("fade", &psid(&code, 0x101f, 0), None, &[]);
+    let seconds = samples as f64 / 44_100.0;
+    assert!(
+        (3.9..6.0).contains(&seconds),
+        "the tune went quiet at 1 s but the render ran {seconds:.2} s"
+    );
+}

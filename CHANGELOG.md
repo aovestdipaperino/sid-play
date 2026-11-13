@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Without `--seconds`, a tune plays to its end. The length comes from HVSC's
+  `Songlengths.md5`, found in `DOCUMENTS/` above the tune or named with
+  `--songlengths FILE`, keyed by the file's MD5 (computed in-crate, no new
+  dependency). A tune the database does not list ends after 3 s of silence, or
+  10 s if it never sounds, capped at 10 minutes. A known length is rendered to
+  the exact sample; before, the last 4096-sample block could overshoot it.
+- On a terminal, a progress bar and a 128-band spectrum analyser drawn in
+  Unicode braille (two bands per character, 32 height steps over 8 rows, an
+  8192-point FFT) run on stderr. Under `--sink audio` they lag the render by
+  the output buffer (`sink::LIVE_BUFFER_SECONDS`) to match what is heard.
+  `--quiet` turns them off; they are never drawn when stderr is not a terminal.
+- The PSID header's name, author and released fields are parsed for the
+  display's title line.
+
+### Changed
+
+- The default length is no longer 30 s; pass `--seconds 30` for the old
+  behaviour.
+
 ## 0.3.1 - 2026-11-13
 
 ### Added

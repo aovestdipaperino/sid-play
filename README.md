@@ -24,6 +24,19 @@ default output device:
 cargo run --release -p sid-play --features playback --bin render -- tune.sid --sink audio
 ```
 
+Without `--seconds` a tune plays to its end. A PSID file carries no length, so
+the player looks for HVSC's `DOCUMENTS/Songlengths.md5` in the directories above
+the tune (or takes one from `--songlengths FILE`) and uses the length listed
+for the tune's MD5. A tune the database does not know plays until it has been
+silent for three seconds, capped at ten minutes, since most tunes loop forever.
+
+On a terminal, `render` draws a progress bar and a 128-band spectrum analyser on
+stderr in Unicode braille. Each braille character is a grid of dots two wide and
+four tall, so the analyser packs two bands into every character at four height
+steps per row, and each band's recent peak hangs above its bar as a single dot.
+With `--sink audio` the display lags the render by the output
+buffer, so it matches what you hear. `--quiet` turns it off.
+
 ## The crates
 
 Two crates in two repositories, both on crates.io:
