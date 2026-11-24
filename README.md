@@ -1,3 +1,5 @@
+[![GitHub stars](https://img.shields.io/github/stars/aovestdipaperino/sid-play?logo=github&color=brightgreen)](https://github.com/aovestdipaperino/sid-play/stargazers)
+
 <p align="center">
   <img src="crates/sid-play/assets/logo.svg" alt="sid-play: a singing 6581 chip sending waveforms past a play button" width="560">
 </p>
